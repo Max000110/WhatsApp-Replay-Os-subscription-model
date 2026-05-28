@@ -1,0 +1,6 @@
+[url "https://github.com/"]
+	insteadOf = ssh://git@github.com/
+	insteadOf = git@github.com:
+
+[http]
+	sslVerify = false

@@ -1,0 +1,160 @@
+version: '3.8'
+
+services:
+  # Database Layer (Postgres + pgvector)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: saas_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-saas_whatsapp}
+      POSTGRES_USER: ${DB_USER:-saas_admin}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-SecretSaaSPassword123!}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-saas_admin} -d ${DB_NAME:-saas_whatsapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Message Broker & Cache Layer (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: saas_redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-SecretRedisPassword123!}
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-SecretRedisPassword123!}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Local Quantized AI Inference Service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: saas_ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    entrypoint: [ "/bin/bash", "-c", "ollama serve & sleep 5 && ollama pull qwen2.5:1.5b-instruct && ollama pull all-minilm && wait" ]
+
+  # FastAPI Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: saas_backend
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-saas_admin}:${DB_PASSWORD:-SecretSaaSPassword123!}@postgres:5432/${DB_NAME:-saas_whatsapp}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-SecretRedisPassword123!}@redis:6379/0
+      - OLLAMA_HOST=http://ollama:11434
+      - JWT_SECRET=${JWT_SECRET:-VeryStrongJWTSecret987654321!}
+      - WHATSAPP_ENGINE_URL=http://whatsapp-engine:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Celery Background Workers (Campaign Dispatches & PDF Vectorization)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: saas_worker
+    command: celery -A worker.celery_app.celery worker --loglevel=info --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql://${DB_USER:-saas_admin}:${DB_PASSWORD:-SecretSaaSPassword123!}@postgres:5432/${DB_NAME:-saas_whatsapp}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-SecretRedisPassword123!}@redis:6379/0
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # WhatsApp Node.js Engine (Baileys)
+  whatsapp-engine:
+    build:
+      context: ./whatsapp-engine
+      dockerfile: Dockerfile
+    container_name: saas_whatsapp_engine
+    restart: always
+    environment:
+      - PORT=3000
+      - DATABASE_URL=postgresql://${DB_USER:-saas_admin}:${DB_PASSWORD:-SecretSaaSPassword123!}@postgres:5432/${DB_NAME:-saas_whatsapp}
+      - BACKEND_API_URL=http://backend:8000/api/v1/sessions/webhook
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-SecretRedisPassword123!}@redis:6379/0
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # Frontend Interface (Next.js Dashboard)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: saas_frontend
+    restart: always
+    ports:
+      - "30000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G
+
+  # Gateway Reverse Proxy (Nginx + SSL Auto Routing)
+  nginx:
+    build:
+      context: ./nginx
+    container_name: saas_nginx
+    restart: always
+    ports:
+      - "8080:80"
+      - "8443:443"
+    depends_on:
+      - backend
+      - frontend
+    volumes:
+      - certs_data:/etc/letsencrypt
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+  certs_data:

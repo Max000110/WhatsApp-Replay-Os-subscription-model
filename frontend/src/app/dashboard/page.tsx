@@ -1,0 +1,1106 @@
+'use client';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { api } from '@/lib/api';
+import { 
+  QrCode, Bot, MessageSquare, Megaphone, FileText, LogOut, Plus, Trash2, 
+  Send, User, Clock, ShieldCheck, Database, RefreshCw, Smartphone, CheckCircle, AlertCircle, Loader2
+} from 'lucide-react';
+
+type Tab = 'sessions' | 'bots' | 'chats' | 'campaigns' | 'knowledge';
+
+export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<Tab>('sessions');
+  const [tenantName, setTenantName] = useState('Workspace Console');
+  
+  // Dynamic Global Refresh states
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [bots, setBots] = useState<any[]>([]);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [kbs, setKbs] = useState<any[]>([]);
+  const [kbDocs, setKbDocs] = useState<any[]>([]);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  
+  // Selection states
+  const [activeSession, setActiveSession] = useState<any | null>(null);
+  const [activeConv, setActiveConv] = useState<any | null>(null);
+  const [activeKb, setActiveKb] = useState<any | null>(null);
+
+  // Form input variables
+  const [newSessionName, setNewSessionName] = useState('');
+  const [newBotName, setNewBotName] = useState('');
+  const [newBotPrompt, setNewBotPrompt] = useState('You are an elegant customer assistant. Answer questions politely based on facts.');
+  const [newBotSessionId, setNewBotSessionId] = useState('');
+  const [newBotRagEnabled, setNewBotRagEnabled] = useState(false);
+  const [agentMsgText, setAgentMsgText] = useState('');
+  const [newKbName, setNewKbName] = useState('');
+  const [newKbDesc, setNewKbDesc] = useState('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [campaignName, setCampaignName] = useState('');
+  const [campaignText, setCampaignText] = useState('');
+  const [campaignSessionId, setCampaignSessionId] = useState('');
+  const [campaignRecipients, setCampaignRecipients] = useState('');
+
+  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Live Override send states
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+
+  // Refs for stale-closure-free access inside polling intervals
+  const activeConvRef = useRef<any>(null);
+  const activeKbRef = useRef<any>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => { activeConvRef.current = activeConv; }, [activeConv]);
+  useEffect(() => { activeKbRef.current = activeKb; }, [activeKb]);
+
+  // Auto-scroll to the latest message whenever the messages list changes
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    // Basic session validation
+    const token = localStorage.getItem('saas_token');
+    if (!token) {
+      window.location.href = '/login';
+      return;
+    }
+    
+    // Dynamic updates poller (5s interval to sync active session QR/statuses under CPU restrictions)
+    fetchDashboardCoreData();
+    const interval = setInterval(fetchDashboardCoreData, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const fetchDashboardCoreData = useCallback(async () => {
+    try {
+      const sessList = await api.sessions.list();
+      setSessions(sessList);
+
+      // Preserve active QR focus if updated in backend — use ref to avoid stale closure
+      const currentActiveSession = activeConvRef.current;
+      setActiveSession((prev: any) => {
+        if (prev) {
+          const found = sessList.find((s: any) => s.id === prev.id);
+          return found || prev;
+        }
+        return prev;
+      });
+
+      const botList = await api.bots.list();
+      setBots(botList);
+
+      const convList = await api.chats.list();
+      setConversations(convList);
+
+      // CRITICAL FIX: Keep activeConv in sync with fresh server data.
+      // Without this, session_id/customer_phone can be stale causing 400 errors on send.
+      if (activeConvRef.current) {
+        const freshConv = convList.find((c: any) => c.id === activeConvRef.current.id);
+        if (freshConv) {
+          setActiveConv(freshConv);
+        }
+      }
+
+      const kbList = await api.knowledge.list();
+      setKbs(kbList);
+      
+      // Auto focus first KB if none selected — use ref to avoid stale closure
+      if (kbList.length > 0 && !activeKbRef.current) {
+        setActiveKb(kbList[0]);
+      }
+
+      const campaignList = await api.campaigns.list();
+      setCampaigns(campaignList);
+    } catch (err: any) {
+      console.error('Core sync failed:', err.message);
+    }
+  }, []);
+
+  // Sync historical messages for focused live override conversation
+  useEffect(() => {
+    if (activeConv) {
+      const convId = activeConv.id;
+      const fetchHistory = async () => {
+        try {
+          const msgList = await api.chats.getMessages(convId);
+          // Use functional update to avoid overwriting optimistic messages that
+          // haven't been ACKed yet (those have id prefixed with 'optimistic-')
+          setMessages(prev => {
+            const hasPending = prev.some((m: any) => String(m.id).startsWith('optimistic-'));
+            if (hasPending) {
+              // Don't overwrite while a send is in flight to avoid flash
+              return prev;
+            }
+            return msgList;
+          });
+        } catch (err: any) {
+          console.error('Chat history fetch failed:', err.message);
+        }
+      };
+      
+      fetchHistory();
+      const chatInterval = setInterval(fetchHistory, 3000);
+      return () => clearInterval(chatInterval);
+    } else {
+      setMessages([]);
+      setSendError('');
+    }
+  }, [activeConv?.id]);
+
+  // Sync uploaded files under selected KB catalog
+  useEffect(() => {
+    if (activeKb) {
+      const fetchKbDocs = async () => {
+        try {
+          const docList = await api.knowledge.getDocs(activeKb.id);
+          setKbDocs(docList);
+        } catch (err) {
+          console.error(err);
+        }
+      };
+      fetchKbDocs();
+    } else {
+      setKbDocs([]);
+    }
+  }, [activeKb]);
+
+  const handleCreateSession = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSessionName.trim()) return;
+    setActionLoading(true);
+    setError('');
+    try {
+      const res = await api.sessions.create({ session_name: newSessionName });
+      setSessions([...sessions, res]);
+      setActiveSession(res); // Focus scanner console
+      setNewSessionName('');
+    } catch (err: any) {
+      setError(err.message || 'Session creation failed.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    if (!confirm('Are you sure you want to remove this session? This wipes creds.')) return;
+    try {
+      await api.sessions.delete(id);
+      setSessions(sessions.filter(s => s.id !== id));
+      if (activeSession?.id === id) setActiveSession(null);
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleCreateBot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBotName.trim()) return;
+    setActionLoading(true);
+    try {
+      const res = await api.bots.create({
+        name: newBotName,
+        system_prompt: newBotPrompt,
+        session_id: newBotSessionId || undefined,
+        rag_enabled: newBotRagEnabled
+      });
+      setBots([...bots, res]);
+      setNewBotName('');
+      setNewBotPrompt('You are an elegant customer assistant. Answer questions politely based on facts.');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleUpdateBotStatus = async (id: string, active: boolean) => {
+    try {
+      const res = await api.bots.patch(id, { is_active: active });
+      setBots(bots.map(b => b.id === id ? res : b));
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleSendAgentMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!agentMsgText.trim() || !activeConv || isSending) return;
+
+    const txt = agentMsgText.trim();
+    const conv = activeConv; // capture stable ref at call time
+
+    setSendError('');
+    setIsSending(true);
+
+    // ── Optimistic render: show the message immediately in the thread ──
+    const optimisticId = `optimistic-${Date.now()}`;
+    const optimisticMsg = {
+      id: optimisticId,
+      conversation_id: conv.id,
+      direction: 'outbound',
+      sender_type: 'user',
+      content: txt,
+      media_url: null,
+      media_type: null,
+      status: 'sending',
+      created_at: new Date().toISOString(),
+    };
+    // Clear input and add optimistic bubble using functional update (stale-free)
+    setAgentMsgText('');
+    setMessages((prev: any[]) => [...prev, optimisticMsg]);
+
+    try {
+      const res = await api.chats.sendMessage({
+        session_id: conv.session_id,
+        to_phone: conv.customer_phone,
+        content: txt
+      });
+
+      // Replace optimistic bubble with real server response (has real id + status)
+      setMessages((prev: any[]) =>
+        prev.map((m: any) => (m.id === optimisticId ? res : m))
+      );
+    } catch (err: any) {
+      // Remove optimistic bubble on failure and restore input text
+      setMessages((prev: any[]) => prev.filter((m: any) => m.id !== optimisticId));
+      setAgentMsgText(txt); // Give the user their text back
+      setSendError(err.message || 'Failed to send message. Please try again.');
+      console.error('[LiveOverride] Send failed:', err);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleCreateKb = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKbName.trim()) return;
+    try {
+      const res = await api.knowledge.create({ name: newKbName, description: newKbDesc });
+      setKbs([...kbs, res]);
+      setActiveKb(res);
+      setNewKbName('');
+      setNewKbDesc('');
+    } catch (err: any) {
+      alert(err.message);
+    }
+  };
+
+  const handleFileUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uploadFile || !activeKb) return;
+    setActionLoading(true);
+    try {
+      const res = await api.knowledge.uploadDoc(activeKb.id, uploadFile);
+      setKbDocs([...kbDocs, res]);
+      setUploadFile(null);
+      // Reset input element
+      const fileInput = document.getElementById('kb-file-input') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCreateCampaign = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!campaignName || !campaignText || !campaignSessionId || !campaignRecipients) return;
+    setActionLoading(true);
+    try {
+      const cleanList = campaignRecipients.split('\n').filter(p => p.trim().length > 0);
+      const res = await api.campaigns.create({
+        name: campaignName,
+        template_text: campaignText,
+        session_id: campaignSessionId,
+        scheduled_time: new Date().toISOString(),
+        recipient_phones: cleanList
+      });
+      setCampaigns([...campaigns, res]);
+      setCampaignName('');
+      setCampaignText('');
+      setCampaignRecipients('');
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex h-screen bg-background relative overflow-hidden text-slate-100">
+      
+      {/* Dynamic glow circles */}
+      <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-primary/10 rounded-full blur-[180px] pointer-events-none"></div>
+      
+      {/* 1. BRAND SIDEBAR */}
+      <aside className="w-64 bg-card/40 backdrop-blur-xl border-r border-white/5 flex flex-col shrink-0 relative">
+        <div className="p-6 border-b border-white/5 flex items-center gap-3">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-tr from-primary to-violet-500 flex items-center justify-center shadow-md shadow-primary/20">
+            <Smartphone className="h-4.5 w-4.5 text-white" />
+          </div>
+          <div>
+            <h1 className="font-bold text-sm text-white leading-none">Antigravity</h1>
+            <span className="text-[10px] text-slate-400 font-semibold tracking-widest uppercase">Flow Console</span>
+          </div>
+        </div>
+
+        {/* Tab Navigator */}
+        <nav className="flex-1 px-4 py-6 space-y-1.5">
+          <button
+            onClick={() => setActiveTab('sessions')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'sessions' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <QrCode className="h-4.5 w-4.5" />
+            WA Sessions
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('bots')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'bots' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <Bot className="h-4.5 w-4.5" />
+            AI Bot Config
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('chats')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'chats' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <MessageSquare className="h-4.5 w-4.5" />
+            Live Override
+          </button>
+
+          <button
+            onClick={() => setActiveTab('campaigns')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'campaigns' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <Megaphone className="h-4.5 w-4.5" />
+            Campaigns
+          </button>
+
+          <button
+            onClick={() => setActiveTab('knowledge')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'knowledge' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <FileText className="h-4.5 w-4.5" />
+            RAG Documents
+          </button>
+        </nav>
+
+        {/* Footer Admin Zone */}
+        <div className="p-4 border-t border-white/5 flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-full bg-slate-800 flex items-center justify-center">
+              <User className="h-4 w-4 text-slate-400" />
+            </div>
+            <div className="text-xs truncate max-w-[120px]">
+              <p className="font-semibold text-slate-200">Tenant Space</p>
+              <p className="text-[10px] text-slate-500">Free Tier Account</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => api.logout()} 
+            className="p-1.5 hover:bg-red-500/10 text-slate-400 hover:text-red-400 rounded-lg transition"
+            title="Sign out of Console"
+          >
+            <LogOut className="h-4.5 w-4.5" />
+          </button>
+        </div>
+      </aside>
+
+      {/* 2. DYNAMIC WORKSPACE PANEL */}
+      <main className="flex-1 flex flex-col bg-slate-950/40 relative overflow-hidden">
+        
+        {/* Workspace Top Header Bar */}
+        <header className="h-16 border-b border-white/5 px-8 flex items-center justify-between backdrop-blur-md">
+          <h2 className="font-bold text-lg text-white capitalize flex items-center gap-2">
+            {activeTab === 'sessions' && <><QrCode className="h-5 w-5 text-primary" /> WhatsApp Web Sessions</>}
+            {activeTab === 'bots' && <><Bot className="h-5 w-5 text-primary" /> Bot Orchestrator</>}
+            {activeTab === 'chats' && <><MessageSquare className="h-5 w-5 text-primary" /> Customer Inbox & Live Override</>}
+            {activeTab === 'campaigns' && <><Megaphone className="h-5 w-5 text-primary" /> Marketing Broadcast campaigns</>}
+            {activeTab === 'knowledge' && <><Database className="h-5 w-5 text-primary" /> RAG Knowledge Store</>}
+          </h2>
+          <div className="flex items-center gap-2 text-xs text-slate-400 bg-white/5 py-1.5 px-3 rounded-full border border-white/5">
+            <span className="h-2 w-2 rounded-full bg-accent animate-pulse"></span>
+            CPU Node: Stable
+          </div>
+        </header>
+
+        {/* Outer body wrapper */}
+        <div className="flex-1 p-8 overflow-y-auto">
+          
+          {/* ======================================= */}
+          {/* TAB 1: WHATSAPP WEB CONNECTOR */}
+          {/* ======================================= */}
+          {activeTab === 'sessions' && (
+            <div className="grid grid-cols-3 gap-8 items-start">
+              
+              {/* Left pane: Create & List sessions */}
+              <div className="col-span-2 space-y-6">
+                
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg relative">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">
+                    <Plus className="h-4.5 w-4.5 text-primary" /> Mount New WhatsApp Web Instance
+                  </h3>
+                  <form onSubmit={handleCreateSession} className="flex gap-4">
+                    <input
+                      type="text"
+                      value={newSessionName}
+                      onChange={(e) => setNewSessionName(e.target.value)}
+                      placeholder="e.g. Sales Account, Support Line"
+                      className="flex-1 bg-slate-950/50 border border-white/5 rounded-lg py-2 px-4 text-sm focus:outline-none focus:border-primary/50"
+                      required
+                    />
+                    <button
+                      type="submit"
+                      disabled={actionLoading}
+                      className="bg-primary hover:bg-primary-hover px-5 rounded-lg font-semibold text-sm transition text-white disabled:opacity-50"
+                    >
+                      Provision Session
+                    </button>
+                  </form>
+                </div>
+
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4">Active Connection Instances</h3>
+                  {sessions.length === 0 ? (
+                    <div className="text-center py-10 border border-dashed border-white/5 rounded-xl">
+                      <Smartphone className="h-8 w-8 text-slate-600 mx-auto mb-2" />
+                      <p className="text-slate-400 text-xs">No active WhatsApp connections configured yet.</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-white/5">
+                      {sessions.map((s: any) => (
+                        <div key={s.id} className="py-4 flex items-center justify-between first:pt-0 last:pb-0">
+                          <div>
+                            <p className="font-semibold text-sm text-slate-200">{s.session_name}</p>
+                            <div className="flex items-center gap-3 mt-1">
+                              <span className={`text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full ${
+                                s.status === 'connected' ? 'bg-accent/10 text-accent border border-accent/20' :
+                                s.status === 'scanning' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                                'bg-slate-800 text-slate-400'
+                              }`}>
+                                {s.status}
+                              </span>
+                              {s.phone_number && <span className="text-[10px] text-slate-500 font-medium">JID: {s.phone_number}</span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {s.status !== 'connected' && (
+                              <button
+                                onClick={() => setActiveSession(s)}
+                                className="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg font-semibold text-slate-200 transition"
+                              >
+                                View QR
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteSession(s.id)}
+                              className="p-1.5 bg-red-950/20 text-slate-500 hover:text-red-400 rounded-lg border border-transparent hover:border-red-500/10 transition"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+
+              {/* Right pane: Interactive QR screen viewer */}
+              <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg flex flex-col items-center">
+                <h3 className="text-sm font-semibold text-slate-200 mb-6 text-center w-full pb-3 border-b border-white/5">
+                  Link Account (QR Terminal Stream)
+                </h3>
+                {activeSession ? (
+                  <div className="flex flex-col items-center text-center">
+                    <p className="text-xs text-slate-400 mb-4 uppercase tracking-wider font-semibold">Instance: {activeSession.session_name}</p>
+                    
+                    {activeSession.status === 'scanning' && activeSession.qr_code ? (
+                      <div className="bg-white p-4 rounded-xl shadow-inner border border-white/10 flex items-center justify-center">
+                        {/* Stream actual QR back from Baileys */}
+                        <img 
+                          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(activeSession.qr_code)}`} 
+                          alt="Scan QR Connection Link" 
+                          className="h-48 w-48"
+                        />
+                      </div>
+                    ) : activeSession.status === 'connected' ? (
+                      <div className="flex flex-col items-center py-6">
+                        <CheckCircle className="h-12 w-12 text-accent mb-3" />
+                        <p className="text-sm font-bold text-slate-200">Device linked successfully!</p>
+                        <p className="text-xs text-slate-500 mt-1">Ready to automate responses.</p>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center py-8">
+                        <RefreshCw className="h-8 w-8 text-slate-600 animate-spin mb-3" />
+                        <p className="text-xs text-slate-400">Loading system state socket thread...</p>
+                      </div>
+                    )}
+                    
+                    <p className="text-[10px] text-slate-500 mt-6 max-w-[200px]">
+                      Open WhatsApp on your phone, go to Linked Devices, and scan this QR code to authenticate.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="py-20 text-center">
+                    <Smartphone className="h-10 w-10 text-slate-700 mx-auto mb-3" />
+                    <p className="text-xs text-slate-400">Select an initializing session on the left to show the QR camera feed.</p>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+
+          {/* ======================================= */}
+          {/* TAB 2: AI BOT CONFIGURATOR */}
+          {/* ======================================= */}
+          {activeTab === 'bots' && (
+            <div className="grid grid-cols-3 gap-8 items-start">
+              
+              {/* Form creation */}
+              <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg space-y-4">
+                <h3 className="text-sm font-semibold text-slate-200 pb-3 border-b border-white/5 flex items-center gap-2">
+                  <Plus className="h-4.5 w-4.5 text-primary" /> Create New AI Assistant
+                </h3>
+                <form onSubmit={handleCreateBot} className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Bot Name</label>
+                    <input
+                      type="text"
+                      value={newBotName}
+                      onChange={(e) => setNewBotName(e.target.value)}
+                      placeholder="e.g. Sales Closer, FAQ Bot"
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-sm focus:outline-none focus:border-primary/50"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Attach to WhatsApp account</label>
+                    <select
+                      value={newBotSessionId}
+                      onChange={(e) => setNewBotSessionId(e.target.value)}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-sm text-slate-300 focus:outline-none focus:border-primary/50"
+                      required
+                    >
+                      <option value="">-- Choose Connected Line --</option>
+                      {sessions.filter(s => s.status === 'connected').map(s => (
+                        <option key={s.id} value={s.id}>{s.session_name} ({s.phone_number})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">RAG Context vectoring</label>
+                    <div className="flex items-center gap-2 mt-1 bg-slate-950/40 p-2.5 rounded-lg border border-white/5">
+                      <input
+                        type="checkbox"
+                        id="rag_checkbox"
+                        checked={newBotRagEnabled}
+                        onChange={(e) => setNewBotRagEnabled(e.target.checked)}
+                        className="rounded border-white/5 bg-slate-900 text-primary focus:ring-primary/20 h-4 w-4"
+                      />
+                      <label htmlFor="rag_checkbox" className="text-xs text-slate-300 font-medium">Inject Knowledge Base retrieval</label>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">System Instructions</label>
+                    <textarea
+                      value={newBotPrompt}
+                      onChange={(e) => setNewBotPrompt(e.target.value)}
+                      rows={5}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-xs focus:outline-none focus:border-primary/50 leading-relaxed"
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={actionLoading}
+                    className="w-full bg-primary hover:bg-primary-hover text-white py-2.5 rounded-lg text-sm font-semibold transition mt-2"
+                  >
+                    Deploy Chatbot
+                  </button>
+                </form>
+              </div>
+
+              {/* Bot Catalog */}
+              <div className="col-span-2 space-y-6">
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4">Active Chatbots</h3>
+                  {bots.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-white/5 rounded-xl">
+                      <Bot className="h-8 w-8 text-slate-600 mx-auto mb-2" />
+                      <p className="text-slate-400 text-xs">No active chatbots configured yet.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-6">
+                      {bots.map((b: any) => (
+                        <div key={b.id} className="p-4 bg-slate-950/30 border border-white/5 rounded-xl flex flex-col justify-between">
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-bold text-sm text-slate-200">{b.name}</h4>
+                              <span className={`text-[9px] font-semibold px-2 py-0.5 rounded-full ${
+                                b.is_active ? 'bg-accent/10 text-accent border border-accent/20' : 'bg-slate-800 text-slate-400'
+                              }`}>
+                                {b.is_active ? 'Active' : 'Offline'}
+                              </span>
+                            </div>
+                            
+                            <p className="text-[10px] text-slate-400 font-semibold tracking-wider uppercase">Instructions:</p>
+                            <p className="text-[11px] text-slate-400 line-clamp-3 mt-1 leading-relaxed bg-slate-950/60 p-2 rounded border border-white/5 mb-3">
+                              {b.system_prompt}
+                            </p>
+
+                            <div className="flex flex-col gap-1.5 text-[10px] text-slate-500 mb-4 font-semibold uppercase tracking-wider">
+                              <p className="flex items-center gap-1.5"><Smartphone className="h-3 w-3" /> Attached: {sessions.find(s => s.id === b.session_id)?.session_name || 'Global Unbound'}</p>
+                              <p className="flex items-center gap-1.5"><Database className="h-3 w-3" /> RAG Search: {b.rag_enabled ? 'Enabled' : 'Disabled'}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between border-t border-white/5 pt-3 mt-2">
+                            <button
+                              onClick={() => handleUpdateBotStatus(b.id, !b.is_active)}
+                              className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition ${
+                                b.is_active 
+                                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' 
+                                  : 'bg-primary hover:bg-primary-hover text-white'
+                              }`}
+                            >
+                              {b.is_active ? 'Deactivate' : 'Activate'}
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (confirm('Delete bot?')) {
+                                  await api.bots.delete(b.id);
+                                  setBots(bots.filter(x => x.id !== b.id));
+                                }
+                              }}
+                              className="text-xs text-red-400 hover:underline"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ======================================= */}
+          {/* TAB 3: LIVE AGENT CHAT OVERRIDE */}
+          {/* ======================================= */}
+          {activeTab === 'chats' && (
+            <div className="grid grid-cols-3 gap-8 h-[calc(100vh-12rem)] items-stretch">
+              
+              {/* Left Column: Conversations Sidebar */}
+              <div className="bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
+                <h3 className="text-sm font-semibold text-slate-200 p-4 border-b border-white/5 shrink-0">Conversations</h3>
+                <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {conversations.length === 0 ? (
+                    <div className="text-center py-10">
+                      <MessageSquare className="h-6 w-6 text-slate-700 mx-auto mb-2" />
+                      <p className="text-[11px] text-slate-500">No message channels found.</p>
+                    </div>
+                  ) : (
+                    conversations.map((c: any) => (
+                      <button
+                        key={c.id}
+                        onClick={() => setActiveConv(c)}
+                        className={`w-full text-left p-3 rounded-lg border transition ${
+                          activeConv?.id === c.id 
+                            ? 'bg-primary/10 border-primary/30 text-white' 
+                            : 'bg-slate-950/20 border-white/5 text-slate-400 hover:bg-white/5 hover:text-white'
+                        }`}
+                      >
+                        <p className="font-bold text-xs text-slate-200">{c.customer_name || 'Guest User'}</p>
+                        <p className="text-[10px] text-slate-500 font-semibold tracking-wide mt-0.5">Phone: +{c.customer_phone}</p>
+                        <p className="text-[9px] text-slate-600 mt-2 flex items-center gap-1.5"><Clock className="h-2.5 w-2.5" /> {new Date(c.last_message_at).toLocaleTimeString()}</p>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Right Columns: Thread & override input */}
+              <div className="col-span-2 bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
+                {activeConv ? (
+                  <>
+                    {/* Thread Header */}
+                    <div className="p-4 border-b border-white/5 shrink-0 flex items-center justify-between bg-slate-950/20">
+                      <div>
+                        <h4 className="font-bold text-sm text-slate-200">{activeConv.customer_name || 'Guest User'}</h4>
+                        <p className="text-[10px] text-slate-500 font-medium">JID: {activeConv.customer_phone}</p>
+                      </div>
+                      <span className="text-[9px] uppercase tracking-wider font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1.5">
+                        <Clock className="h-3 w-3 animate-spin" /> Live Override Active
+                      </span>
+                    </div>
+
+                    {/* Scrollable bubble container */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4 flex flex-col">
+                      {messages.map((m: any) => (
+                        <div 
+                          key={m.id} 
+                          className={`max-w-[70%] p-3.5 rounded-xl text-xs leading-relaxed transition-opacity ${
+                            m.direction === 'inbound'
+                              ? 'bg-slate-950/60 border border-white/5 text-slate-200 self-start'
+                              : `bg-primary text-white self-end shadow-md shadow-primary/10 ${
+                                  m.status === 'sending' ? 'opacity-60' : 'opacity-100'
+                                }`
+                          }`}
+                        >
+                          <p>{m.content}</p>
+                          <span className={`text-[8px] uppercase tracking-widest font-semibold block mt-2 text-right ${
+                            m.direction === 'inbound' ? 'text-slate-500' : 'text-primary-hover'
+                          }`}>
+                            {m.direction === 'inbound'
+                              ? `${m.sender_type} • ${new Date(m.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+                              : m.status === 'sending'
+                                ? '⏳ sending...'
+                                : m.status === 'failed'
+                                  ? '❌ failed'
+                                  : `✓ ${m.sender_type} • ${new Date(m.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+                            }
+                          </span>
+                        </div>
+                      ))}
+                      {/* Auto-scroll anchor */}
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Inline send error banner — shown INSTEAD of alert() */}
+                    {sendError && (
+                      <div className="mx-4 mb-1 flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+                        <AlertCircle className="h-3.5 w-3.5 text-red-400 shrink-0" />
+                        <p className="text-[11px] text-red-300 flex-1">{sendError}</p>
+                        <button
+                          onClick={() => setSendError('')}
+                          className="text-red-400 hover:text-red-200 text-xs ml-2"
+                        >✕</button>
+                      </div>
+                    )}
+
+                    {/* Agent override input form */}
+                    <form onSubmit={handleSendAgentMessage} className="p-4 border-t border-white/5 bg-slate-950/30 shrink-0 flex gap-4">
+                      <input
+                        type="text"
+                        value={agentMsgText}
+                        onChange={(e) => { setAgentMsgText(e.target.value); if (sendError) setSendError(''); }}
+                        placeholder={isSending ? 'Sending to WhatsApp...' : 'Live agent override mode: Type reply bypassing chatbot...'}
+                        className={`flex-1 bg-slate-950/60 border rounded-lg py-2.5 px-4 text-xs focus:outline-none transition ${
+                          sendError
+                            ? 'border-red-500/50 focus:border-red-400/70'
+                            : 'border-white/5 focus:border-primary/50'
+                        } ${isSending ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        disabled={isSending}
+                      />
+                      <button
+                        type="submit"
+                        disabled={isSending || !agentMsgText.trim()}
+                        className="bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed px-5 rounded-lg flex items-center justify-center text-white transition shadow-md shadow-primary/25 min-w-[44px]"
+                      >
+                        {isSending
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Send className="h-4 w-4" />}
+                      </button>
+                    </form>
+                  </>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500">
+                    <MessageSquare className="h-10 w-10 mb-3" />
+                    <p className="text-xs">Select a customer conversation thread from the sidebar to activate live agent controls.</p>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+
+          {/* ======================================= */}
+          {/* TAB 4: MARKETING CAMPAIGNS */}
+          {/* ======================================= */}
+          {activeTab === 'campaigns' && (
+            <div className="grid grid-cols-3 gap-8 items-start">
+              
+              {/* Creator Card */}
+              <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg space-y-4">
+                <h3 className="text-sm font-semibold text-slate-200 pb-3 border-b border-white/5 flex items-center gap-2">
+                  <Megaphone className="h-4.5 w-4.5 text-primary" /> Schedule Broadcast
+                </h3>
+                <form onSubmit={handleCreateCampaign} className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Campaign Name</label>
+                    <input
+                      type="text"
+                      value={campaignName}
+                      onChange={(e) => setCampaignName(e.target.value)}
+                      placeholder="e.g. Black Friday Launch"
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-sm focus:outline-none focus:border-primary/50"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Sender WhatsApp JID</label>
+                    <select
+                      value={campaignSessionId}
+                      onChange={(e) => setCampaignSessionId(e.target.value)}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-sm text-slate-300 focus:outline-none focus:border-primary/50"
+                      required
+                    >
+                      <option value="">-- Choose Account --</option>
+                      {sessions.filter(s => s.status === 'connected').map(s => (
+                        <option key={s.id} value={s.id}>{s.session_name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Recipient Phone JIDs (one per line)</label>
+                    <textarea
+                      value={campaignRecipients}
+                      onChange={(e) => setCampaignRecipients(e.target.value)}
+                      rows={4}
+                      placeholder="919876543210&#10;917654321098"
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-xs focus:outline-none focus:border-primary/50 leading-relaxed font-mono"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Template Broadcast Body</label>
+                    <textarea
+                      value={campaignText}
+                      onChange={(e) => setCampaignText(e.target.value)}
+                      rows={5}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-xs focus:outline-none focus:border-primary/50 leading-relaxed"
+                      placeholder="Hello from Acme! Here is your exclusive offer..."
+                      required
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={actionLoading}
+                    className="w-full bg-primary hover:bg-primary-hover text-white py-2.5 rounded-lg text-sm font-semibold transition"
+                  >
+                    {actionLoading ? 'Initializing logs...' : 'Dispatch Broadcast'}
+                  </button>
+                </form>
+              </div>
+
+              {/* History list */}
+              <div className="col-span-2 space-y-6">
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4">Broadcast Analytics</h3>
+                  {campaigns.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-white/5 rounded-xl">
+                      <Megaphone className="h-8 w-8 text-slate-600 mx-auto mb-2" />
+                      <p className="text-slate-400 text-xs">No campaign dispatches initiated yet.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {campaigns.map((c: any) => (
+                        <div key={c.id} className="p-4 bg-slate-950/30 border border-white/5 rounded-xl flex items-center justify-between">
+                          <div>
+                            <h4 className="font-bold text-sm text-slate-200">{c.name}</h4>
+                            <p className="text-[11px] text-slate-500 mt-1 max-w-sm truncate">{c.template_text}</p>
+                            <p className="text-[9px] text-slate-600 mt-2 font-semibold uppercase tracking-wider">Scheduled: {new Date(c.scheduled_time).toLocaleString()}</p>
+                          </div>
+                          <span className={`text-[10px] uppercase font-bold tracking-wider px-3 py-1 rounded-full ${
+                            c.status === 'completed' ? 'bg-accent/10 text-accent border border-accent/20' :
+                            c.status === 'sending' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                            'bg-slate-800 text-slate-400'
+                          }`}>
+                            {c.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {/* ======================================= */}
+          {/* TAB 5: RAG DOCUMENT INGESTOR */}
+          {/* ======================================= */}
+          {activeTab === 'knowledge' && (
+            <div className="grid grid-cols-3 gap-8 items-start">
+              
+              {/* Creator column */}
+              <div className="space-y-6">
+                
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg space-y-4">
+                  <h3 className="text-sm font-semibold text-slate-200 pb-3 border-b border-white/5 flex items-center gap-2">
+                    <Plus className="h-4.5 w-4.5 text-primary" /> Create Knowledge base
+                  </h3>
+                  <form onSubmit={handleCreateKb} className="space-y-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Catalog Name</label>
+                      <input
+                        type="text"
+                        value={newKbName}
+                        onChange={(e) => setNewKbName(e.target.value)}
+                        placeholder="e.g. Sales Guidelines, FAQ Guide"
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-sm focus:outline-none focus:border-primary/50"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Short Description</label>
+                      <textarea
+                        value={newKbDesc}
+                        onChange={(e) => setNewKbDesc(e.target.value)}
+                        rows={2}
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3.5 text-xs focus:outline-none focus:border-primary/50"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full bg-primary hover:bg-primary-hover text-white py-2 rounded-lg text-sm font-semibold transition"
+                    >
+                      Provision Catalog
+                    </button>
+                  </form>
+                </div>
+
+                <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                  <h3 className="text-sm font-semibold text-slate-200 mb-4">Active Catalogs</h3>
+                  {kbs.length === 0 ? (
+                    <p className="text-xs text-slate-500 text-center py-4">No catalogs created.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {kbs.map(k => (
+                        <button
+                          key={k.id}
+                          onClick={() => setActiveKb(k)}
+                          className={`w-full text-left p-3 rounded-lg border transition ${
+                            activeKb?.id === k.id 
+                              ? 'bg-primary/10 border-primary/30 text-white' 
+                              : 'bg-slate-950/20 border-white/5 text-slate-400 hover:bg-white/5 hover:text-white'
+                          }`}
+                        >
+                          <p className="font-bold text-xs text-slate-200">{k.name}</p>
+                          <p className="text-[10px] text-slate-500 mt-1 leading-relaxed truncate">{k.description || 'No description provided.'}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+
+              {/* Uploads and chunks lists */}
+              <div className="col-span-2 space-y-6">
+                {activeKb ? (
+                  <>
+                    <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                      <h3 className="text-sm font-bold text-slate-200 mb-1">Catalog: {activeKb.name}</h3>
+                      <p className="text-[11px] text-slate-400 mb-4 font-semibold tracking-wider uppercase">Active Ingestion Pipeline</p>
+                      
+                      <form onSubmit={handleFileUpload} className="flex gap-4 p-4 bg-slate-950/40 border border-white/5 rounded-xl items-center">
+                        <input
+                          id="kb-file-input"
+                          type="file"
+                          accept=".pdf,.txt"
+                          onChange={(e) => setUploadFile(e.target.files ? e.target.files[0] : null)}
+                          className="flex-1 text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-white file:hover:bg-primary-hover file:cursor-pointer"
+                          required
+                        />
+                        <button
+                          type="submit"
+                          disabled={actionLoading}
+                          className="bg-primary hover:bg-primary-hover text-white text-xs font-semibold px-4 py-2 rounded-lg transition"
+                        >
+                          {actionLoading ? 'Splitting & Vectorizing...' : 'Upload Ingest'}
+                        </button>
+                      </form>
+                    </div>
+
+                    <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg">
+                      <h3 className="text-sm font-semibold text-slate-200 mb-4">Ingested Document Catalog</h3>
+                      {kbDocs.length === 0 ? (
+                        <div className="text-center py-10 border border-dashed border-white/5 rounded-xl">
+                          <FileText className="h-8 w-8 text-slate-600 mx-auto mb-2" />
+                          <p className="text-slate-400 text-xs">No business files ingested yet.</p>
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-white/5">
+                          {kbDocs.map((d: any) => (
+                            <div key={d.id} className="py-3 flex items-center justify-between first:pt-0 last:pb-0">
+                              <div>
+                                <p className="font-semibold text-xs text-slate-200">{d.filename}</p>
+                                <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider mt-1">Uploaded: {new Date(d.created_at).toLocaleDateString()}</p>
+                              </div>
+                              <span className={`text-[9px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full ${
+                                d.status === 'processed' ? 'bg-accent/10 text-accent border border-accent/20' :
+                                d.status === 'processing' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                                'bg-red-500/10 text-red-400'
+                              }`}>
+                                {d.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="bg-card border border-white/5 p-12 text-center rounded-xl shadow-lg">
+                    <Database className="h-8 w-8 text-slate-600 mx-auto mb-2" />
+                    <p className="text-slate-400 text-xs">Provision and select a business catalog on the left to activate RAG uploads.</p>
+                  </div>
+                )}
+              </div>
+
+            </div>
+          )}
+
+        </div>
+      </main>
+    </div>
+  );
+}
