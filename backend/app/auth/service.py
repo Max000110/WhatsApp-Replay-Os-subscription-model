@@ -50,3 +50,16 @@ def get_current_tenant_id(
     Helper dependency yielding the active tenant_id context for strict data scoping
     """
     return current_user.tenant_id
+
+def get_current_admin(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    Dependency yielding the current user context, asserting that the user role is 'admin'
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires Super Admin permissions."
+        )
+    return current_user

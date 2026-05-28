@@ -36,6 +36,19 @@ async def send_agent_message(payload: SendMessageRequest, tenant_id: UUID = Depe
     """
     Simulates agent manual overrides. Dispatches live support message, bypassing AI bots.
     """
+    from app.routers.billing import has_exceeded_message_limit, is_subscription_active
+    if not is_subscription_active(db, tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Your subscription plan has expired or is suspended. Please renew your plan to send messages."
+        )
+
+    if has_exceeded_message_limit(db, tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your monthly outbound message limit has been reached. Please upgrade your subscription plan to send more."
+        )
+
     # Verify session JID bounds
     sess = db.query(WhatsAppSession).filter(
         WhatsAppSession.id == payload.session_id,
@@ -61,29 +74,61 @@ async def send_agent_message(payload: SendMessageRequest, tenant_id: UUID = Depe
         db.commit()
         db.refresh(conv)
 
+    # Set ownership takeover: pause AI bot for 15 minutes
+    from datetime import datetime, timedelta, timezone
+    conv.bot_paused_until = datetime.now(timezone.utc) + timedelta(minutes=15)
+    db.commit()
+
     # 2. Persist the outbound agent message
     new_msg = Message(
+        id=payload.client_uuid if payload.client_uuid else None,
         conversation_id=conv.id,
         direction="outbound",
         sender_type="user",
         content=payload.content,
-        status="pending"
+        status="queued"
     )
     db.add(new_msg)
-    db.commit()
-
-    # 3. Request WhatsApp Engine to push message safely
-    success = await session_service.send_whatsapp_message(sess.id, clean_phone, payload.content)
-    if success:
-        new_msg.status = "sent"
-    else:
-        new_msg.status = "failed"
-        
     db.commit()
     db.refresh(new_msg)
 
     # Update conversation last activity stamp
     conv.last_message_at = new_msg.created_at
     db.commit()
+    db.refresh(conv)
+
+    # 3. Publish real-time events over WebSockets
+    from app.core.websocket import websocket_manager
+    message_data = {
+        "id": str(new_msg.id),
+        "conversation_id": str(new_msg.conversation_id),
+        "direction": new_msg.direction,
+        "sender_type": new_msg.sender_type,
+        "content": new_msg.content,
+        "status": new_msg.status,
+        "created_at": new_msg.created_at.isoformat() if new_msg.created_at else None
+    }
+    conv_data = {
+        "id": str(conv.id),
+        "tenant_id": str(conv.tenant_id),
+        "session_id": str(conv.session_id),
+        "customer_phone": conv.customer_phone,
+        "customer_name": conv.customer_name,
+        "is_archived": conv.is_archived,
+        "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None
+    }
+    
+    # Broadcast to websocket connections
+    import asyncio
+    asyncio.create_task(websocket_manager.publish_event(str(tenant_id), "message", message_data))
+    asyncio.create_task(websocket_manager.publish_event(str(tenant_id), "conversation", conv_data))
+
+    # 4. Request WhatsApp Engine to push message safely in the background
+    asyncio.create_task(session_service.send_whatsapp_message(
+        session_id=str(sess.id),
+        to_phone=clean_phone,
+        text=payload.content,
+        message_id=str(new_msg.id)
+    ))
 
     return new_msg

@@ -57,13 +57,25 @@ export class BaileysManager {
       auth: state,
       printQRInTerminal: false,
       logger,
-      browser: ["Google Antigravity SaaS", "Chrome", "1.0.0"]
+      browser: ["ReplyOS", "Chrome", "1.0.0"]
     });
 
     this.activeSockets.set(sessionId, socket);
 
-    // Bind safe Anti-Ban outbound queue scheduler
-    const antiBan = new AntiBanQueue(socket, sessionId, this.redisUrl);
+    let tenantId = "unknown";
+    try {
+      const res = await this.pool.query("SELECT tenant_id FROM whatsapp_sessions WHERE id = $1", [sessionId]);
+      if (res.rows.length > 0) {
+        tenantId = res.rows[0].tenant_id;
+      }
+    } catch (err: any) {
+      console.error(`[BaileysManager - ${sessionId}] Failed to query tenant_id:`, err.message);
+    }
+
+    // Bind safe Anti-Ban outbound queue scheduler with status callback
+    const antiBan = new AntiBanQueue(socket, sessionId, tenantId, this.redisUrl, (event, data) => {
+      this.notifyWebhook(sessionId, event, data);
+    });
     this.activeQueues.set(sessionId, antiBan);
 
     // Handle credentials state updates
@@ -187,23 +199,59 @@ export class BaileysManager {
       }
     });
 
+    // Capture message status / ACK update events
+    socket.ev.on("messages.update", async (updates) => {
+      for (const update of updates) {
+        if (!update.key || !update.update) continue;
+        
+        const messageId = update.key.id;
+        const from = update.key.remoteJid?.split("@")[0] || "";
+        const statusVal = update.update.status;
+        
+        if (statusVal === undefined || statusVal === null) continue;
+        
+        // Map Baileys numeric status to our string states
+        let stringStatus = "sent";
+        if (statusVal === 3) {
+          stringStatus = "delivered";
+        } else if (statusVal === 4 || statusVal === 5) {
+          stringStatus = "read";
+        } else if (statusVal === 2) {
+          stringStatus = "sent";
+        } else if (statusVal === 1) {
+          stringStatus = "sending";
+        } else {
+          continue; // Ignore other statuses like PENDING/PLAYED if not mapped
+        }
+
+        console.log(`[BaileysManager - ${sessionId}] Message status update: ${messageId} -> ${stringStatus}`);
+
+        // Forward ACK update to FastAPI backend webhook
+        this.notifyWebhook(sessionId, "ack", {
+          whatsappMessageId: messageId,
+          from,
+          status: stringStatus
+        });
+      }
+    });
+
   }
 
   /**
    * Safe message dispatcher leveraging anti-ban queue
    */
-  public async queueOutgoingMessage(sessionId: string, to: string, text: string): Promise<boolean> {
+  public async queueOutgoingMessage(sessionId: string, to: string, text: string, messageId?: string): Promise<boolean> {
     const queue = this.activeQueues.get(sessionId);
     if (!queue) {
       console.error(`[BaileysManager] Session ${sessionId} does not have an active queue. Initializing first.`);
       await this.initSession(sessionId);
       const reFetchedQueue = this.activeQueues.get(sessionId);
       if (!reFetchedQueue) return false;
-      await reFetchedQueue.queueMessage(to, text);
+      await reFetchedQueue.queueMessage(to, text, messageId);
       return true;
     }
 
-    await queue.queueMessage(to, text);
+    await queue.queueMessage(to, text, messageId);
     return true;
   }
 

@@ -6,7 +6,7 @@ This document outlines the current feature completion matrix, future capability 
 
 ## 1. MVP Status & Functional Matrix
 
-All core MVP features are fully implemented and verified functional:
+All core MVP and SaaS foundation features are fully implemented and verified functional:
 
 | Phase | Module | Status | Details |
 | :--- | :--- | :--- | :--- |
@@ -16,19 +16,19 @@ All core MVP features are fully implemented and verified functional:
 | **Phase 4** | FastAPI Backend | ✅ Complete | JWT Auth, Bots, Chats, Campaigns, and Webhook integrations. |
 | **Phase 5** | RAG Ingestion Pipeline | ✅ Complete | PDF document uploads, Celery chunking, and pgvector cosine search. |
 | **Phase 6** | Frontend Dashboard | ✅ Complete | Premium Next.js UI, Live Override, active conversation flows. |
-| **Phase 7** | System Walkthrough | ✅ Complete | E2E validations confirmed successful, documentation persistent brain generated. |
+| **Phase 7** | Real-time Synchronization | ✅ Complete | Reconnected WebSocket connection manager replacing polling entirely. |
+| **Phase 8** | Razorpay SaaS Billing | ✅ Complete | Razorpay subscription plans (Starter/Pro/Agency), webhook handlers, dynamic limits (sessions and monthly message caps) and sandbox checkout. |
+| **Phase 9** | Cloudflare reverse proxy | ✅ Complete | Nginx updates extracting real client IPs from CF-Connecting-IP headers. |
 
 ---
 
 ## 2. Incomplete & Missing SaaS Features
 
-To transform the current architectural foundation into a fully commercialized public SaaS product, the following features must be built:
+To transform the current architectural foundation into a fully commercialized public SaaS product, the following features are planned:
 
-1. **Self-Service Billing Integration (Stripe)**:
-   - Stripe Checkout portal integration for automated subscription tier upgrades.
-   - Database trigger updates on stripe webhook events (`customer.subscription.created`, `invoice.payment_succeeded`).
-   - Route restriction middlewares capping active whatsapp-sessions and monthly message counts based on tier limits.
-2. **Dynamic Live Chat Capabilities**:
+1. **Stripe Billing Gateway Parallel Support**:
+   - Introduce Stripe parallel integration for international customers alongside domestic Razorpay routes.
+2. **Dynamic Live Chat Search & Quick-Replies**:
    - Live chat contact list search bar and filters (Unread, Bot Controlled, Agent Controlled, Archived).
    - Dynamic templates panel allowing agents to select and send standard quick-replies.
 3. **Advanced Analytics & Reports**:
@@ -72,14 +72,15 @@ To transform the current architectural foundation into a fully commercialized pu
 ### Security & Hardening
 - [ ] Set `DEBUG=False` and restrict FastAPI OpenAPI documentation route access in production.
 - [ ] Change all default credential passwords in `.env` (Postgres, Redis, JWT Secrets).
-- [ ] Secure communication by routing all traffic through Cloudflare proxies with active HTTPS SSL configurations.
-- [ ] Enforce rate-limits on key API routes using Redis-backed throttling.
+- [✅] Secure communication by routing all traffic through Cloudflare proxies with active HTTPS SSL configurations.
+- [✅] Enforce rate-limits on key API routes using Redis-backed throttling.
 
 ### Storage & Backups
-- [ ] Set up daily automated cron backups of the database schema and store backups offsite (e.g., in AWS S3 or Oracle Object Storage).
+- [✅] Set up daily automated cron backups of the database schema and store backups locally.
+- [ ] Configure offsite uploads of database back archives to S3/Oracle bucket.
 - [ ] Set up automatic vacuum schedules inside PostgreSQL to prevent tables bloat during high message throughput volumes.
 
 ### Performance & Scaling
-- [ ] Add indexing to foreign keys and composite queries to maintain lightning-fast response latency.
-- [ ] Limit Celery concurrency and restrict Docker container resource bounds to prevent CPU thrashing.
+- [✅] Add indexing to foreign keys and composite queries to maintain lightning-fast response latency.
+- [✅] Limit Celery concurrency and restrict Docker container resource bounds to prevent CPU thrashing.
 - [ ] Configure structured logging outputs inside production containers to route traces cleanly to Datadog or Loki.

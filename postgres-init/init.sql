@@ -166,3 +166,90 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON whatsapp_sessions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_customer ON conversations(customer_phone);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON kb_document_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Alter subscriptions to add Razorpay and additional SaaS lifecycle fields
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_subscription_id VARCHAR(255);
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_order_id VARCHAR(255);
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_payment_id VARCHAR(255);
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_cycle VARCHAR(50) DEFAULT 'monthly';
+ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_state VARCHAR(50) DEFAULT 'auto';
+
+-- 14. subscription_events
+CREATE TABLE IF NOT EXISTS subscription_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    subscription_id UUID REFERENCES subscriptions(id) ON DELETE CASCADE,
+    event_type VARCHAR(100) NOT NULL,
+    payload JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 15. payment_transactions
+CREATE TABLE IF NOT EXISTS payment_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    order_id VARCHAR(255) UNIQUE NOT NULL,
+    payment_id VARCHAR(255),
+    signature VARCHAR(255),
+    amount INTEGER NOT NULL,
+    status VARCHAR(50) DEFAULT 'created',
+    plan_tier VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 16. tenant_quotas
+CREATE TABLE IF NOT EXISTS tenant_quotas (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE UNIQUE,
+    max_bots INTEGER DEFAULT 1,
+    max_messages INTEGER DEFAULT 500,
+    bots_used INTEGER DEFAULT 0,
+    messages_used INTEGER DEFAULT 0,
+    reset_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP + INTERVAL '30 days',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 17. usage_metrics
+CREATE TABLE IF NOT EXISTS usage_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    metric_type VARCHAR(100) NOT NULL,
+    quantity INTEGER DEFAULT 1,
+    metric_metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 18. billing_history
+CREATE TABLE IF NOT EXISTS billing_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    transaction_id UUID REFERENCES payment_transactions(id) ON DELETE SET NULL,
+    amount INTEGER NOT NULL,
+    plan_tier VARCHAR(50) NOT NULL,
+    invoice_number VARCHAR(100),
+    paid_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 19. autopay_tokens
+CREATE TABLE IF NOT EXISTS autopay_tokens (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    gateway VARCHAR(50) DEFAULT 'razorpay',
+    customer_id VARCHAR(255) NOT NULL,
+    token_id VARCHAR(255) NOT NULL,
+    status VARCHAR(50) DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 20. renewal_jobs
+CREATE TABLE IF NOT EXISTS renewal_jobs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    subscription_id UUID REFERENCES subscriptions(id) ON DELETE CASCADE,
+    status VARCHAR(50) DEFAULT 'pending',
+    scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    executed_at TIMESTAMP WITH TIME ZONE,
+    error_message TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

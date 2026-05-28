@@ -1,216 +1,73 @@
-# Production Debugging History Log
+# Production Debugging & Incident History
 
-This document lists all major incident reports, runtime exceptions, and structural bugs identified and resolved during the deployment of the WhatsApp AI SaaS Platform.
-
----
-
-## Incident RCA-001: CORS Wildcard with Credentials Conflict
-
-### Symptom
-Frontend requests to FastAPI backend fail with network errors. Browser console displays:
-`Access to fetch at ... from origin ... has been blocked by CORS policy: The value of the 'Access-Control-Allow-Origin' header in the response must not be the wildcard '*' when the request's credentials mode is 'include'.`
-
-### Root Cause
-FastAPI configuration in `backend/app/main.py` initialized `CORSMiddleware` with `allow_origins=["*"]` while setting `allow_credentials=True`. This direct conflict violates the W3C CORS specification and causes browser engines to drop responses.
-
-### Affected Files
-* `backend/app/main.py`
-
-### Exact Fix
-Explicitly map allowed origins parsed from environment parameters or configured production domains:
-```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:30000",
-        "http://144.24.126.153:30000",
-        "http://144.24.126.153:8080",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-### Verification Results
-Browser network requests now resolve with `200 OK` status and return correct headers.
+This document contains a historical log of critical production bugs, root causes, and fixes implemented on the ReplyOS WhatsApp AI SaaS platform.
 
 ---
 
-## Incident RCA-002: Silent Fetch Error Masking
+## 1. Incident RCA-014: AI Bot Replies Fail to Reach Real Devices
 
 ### Symptom
-Failed API requests appear in the browser console as blank objects or generic `TypeError` exceptions. The real server responses (e.g., `401 Unauthorized` or `500 Internal Server Error`) are lost.
+Customer messages sent from real WhatsApp devices propagate successfully to the backend, trigger AI responses, and persist in the database, but the outbound bot response never reaches the target phone.
 
-### Root Cause
-The custom fetch wrapper in `frontend/src/lib/api.ts` used `response.json().catch(() => ({}))` to extract data. When the server returned a plain-text error or empty error stack, `response.json()` failed, fell back to `{}`, and masked the real failure details.
+### Root Cause Analysis (RCA)
+1. **Mock Phone Mismatch**: In testing environments, simulated inbound messages are triggered using curl webhook scripts with a mock number (`185654373789739`).
+2. **Invalid JID Routing**: The AI reply pipeline replies to the mock phone number `185654373789739`. Baileys formats this into `185654373789739@s.whatsapp.net` and attempts transmission.
+3. Since `185654373789739` is a fake/invalid phone number, the WhatsApp server accepts the frame (marking its status as `sent` locally) but never delivers it to any real device.
+4. When testing using real WhatsApp phones, the message successfully reaches the customer. However, the lack of telemetry logs before and after `sock.sendMessage` made tracking execution difficult.
 
-### Affected Files
-* `frontend/src/lib/api.ts`
-
-### Exact Fix
-Implemented a robust two-layer error parsing mechanism:
-```typescript
-const text = await response.text();
-let data;
-try {
-  data = JSON.parse(text);
-} catch {
-  data = { error: text || response.statusText };
-}
-
-if (!response.ok) {
-  throw new Error(data.detail || data.error || `HTTP error! status: ${response.status}`);
-}
-```
-
-### Verification Results
-API error banners now accurately reflect database exceptions and network timeouts.
+### Exact Fixes Applied
+1. Added database query hooks to pull `tenant_id` on session creation inside `BaileysManager`.
+2. Updated the `AntiBanQueue` constructor to accept `tenantId`.
+3. Integrated detailed log traces before and after `sock.sendMessage` in `AntiBanQueue.dispatchSafeMessage`, outputting:
+   - `tenant_id`
+   - `session_id`
+   - `jid`
+   - `message_id`
+   - `message_body`
+   - `socket_state`
+   - `dispatch_source`
 
 ---
 
-## Incident RCA-003: Nginx Path Stripping & Buffer Failures
+## 2. Incident RCA-015: Duplicate Chat Bubble Rendering ("hii" "hii")
 
 ### Symptom
-Requests routing through Nginx to FastAPI return `404 Not Found` or intermittent `502 Bad Gateway` errors.
+When sending an agent manual override message in the live chat panel, the message bubble appears multiple times in the UI.
 
-### Root Cause
-1. **Trailing Slashes**: The `proxy_pass` configuration in `nginx/default.conf` used `proxy_pass http://backend:8000/api/v1/;`. The trailing slash caused Nginx to strip request path prefixes improperly, generating routes like `/sessions` instead of `/api/v1/sessions`.
-2. **Buffer Limits**: Large data payloads (like scanning base64 QR codes) exceeded standard Nginx memory buffers, triggering upstream connection shutdowns.
+### Root Cause Analysis (RCA)
+1. **Optimistic-WebSocket Race Condition**: When an agent sends a message:
+   - The frontend immediately appends a temporary bubble with ID `optimistic-timestamp` (status: `sending`).
+   - The API `POST /chats/send` is triggered.
+   - The database saves the message and triggers a real-time event via WebSockets with the real UUID `message-id`.
+   - The websocket message event fires *before* the API promise resolves. Since the real UUID is not found in the message array, the WebSocket event appends it to the end.
+   - The API promise resolves, and tries to replace the optimistic bubble (ID: `optimistic-timestamp`) with the server response (ID: `message-id`).
+   - Since both the WebSocket event and API response updates are committed independently, the message is duplicated.
 
-### Affected Files
-* `nginx/default.conf`
-
-### Exact Fix
-Removed trailing paths from the `proxy_pass` block and raised Nginx request buffer allocations:
-```nginx
-location /api/v1/ {
-    proxy_pass http://backend:8000/api/v1/;
-    proxy_buffer_size 128k;
-    proxy_buffers 4 256k;
-    proxy_busy_buffers_size 256k;
-}
-```
-
-### Verification Results
-Base64 QR codes and multi-tenant webhook dispatches transit without gateway drops.
+### Exact Fixes Applied
+1. **Client-Side UUID Generation**: Integrated browser-compatible UUID generation on the frontend using `crypto.randomUUID()` / custom generator values.
+2. The generated UUID is assigned as the `client_uuid` in the payload of `api.chats.sendMessage` and used as the optimistic ID from the beginning.
+3. The backend receives `client_uuid` and stores it as the database primary key `id`.
+4. Since the optimistic message, API response, and WebSocket event all share the exact same ID, checks like `prev.some(m => m.id === data.id)` automatically catch duplicates.
+5. Implemented Map-based deduplication in both WebSocket handlers and background fetch hooks:
+   ```typescript
+   setMessages((prev) => {
+     const map = new Map<string, any>();
+     prev.forEach(m => map.set(m.id, m));
+     // Deduplicate and override existing values
+     return Array.from(map.values());
+   });
+   ```
 
 ---
 
-## Incident RCA-004: Passlib-Bcrypt Version Conflict
+## 3. Incident RCA-016: Razorpay Sandbox Keys and Mock Payment Bypasses
 
 ### Symptom
-FastAPI container crashes during boot. Container logs display:
-`ValueError: bcrypt.__about__ does not define __version__`
+Payment creation and verification requests fail with Razorpay API Error Code `401 Unauthorized` in production environments when mock parameters are set.
 
-### Root Cause
-The `passlib` security library implements internal self-checks when parsing bcrypt passwords. When `bcrypt` is upgraded to `4.x` versions, the metadata schemas change, causing passlib to crash.
+### Root Cause Analysis (RCA)
+The API keys defined in environment variables (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`) were sandbox values, causing live order attempts to fail signature checks. The signature verification route allowed bypassing logic if the order ID began with `order_mock_`.
 
-### Affected Files
-* `backend/requirements.txt`
-
-### Exact Fix
-Pinned dependencies to older, stable, fully compatible structures:
-```
-bcrypt==3.2.2
-passlib[bcrypt]==1.7.4
-```
-
-### Verification Results
-FastAPI launches cleanly and successfully processes password hashes and JWT creations.
-
----
-
-## Incident RCA-005: Outdated Baileys Protocol Version Disconnects
-
-### Symptom
-WhatsApp Engine container disconnects from WhatsApp servers instantly during scan. Logs display:
-`Connection closed. Reason code: 405 Outdated protocol version.`
-
-### Root Cause
-Baileys core socket connection hardcoded the Web WhatsApp protocol version. WhatsApp periodic upgrades reject requests using outdated version sequences, disconnecting standard sockets with code `405`.
-
-### Affected Files
-* `whatsapp-engine/src/baileys-manager.ts`
-
-### Exact Fix
-Dynamically fetch the latest valid protocol version via external servers during socket creation:
-```typescript
-import { fetchLatestBaileysVersion } from "@whiskeysockets/baileys";
-
-const { version, isLatest } = await fetchLatestBaileysVersion();
-console.log(`Using Baileys version: ${version.join('.')}, isLatest: ${isLatest}`);
-
-const socket = makeWASocket({
-  version,
-  auth: state,
-  printQRInTerminal: false,
-});
-```
-
-### Verification Results
-WhatsApp instances connect instantly and remain stable over extended operational runs.
-
----
-
-## Incident RCA-006: Background Task DB Connection Leak (Celery)
-
-### Symptom
-When the AI pipeline attempts to process an inbound message and write a reply, database transaction pools exhaust, blocking API endpoints.
-
-### Root Cause
-FastAPI's dependency injection (`get_db`) works perfectly within standard request-response loops. However, in background tasks (`BackgroundTasks`), the request finishes and the session closes *before* the async execution is finished. The thread then attempts to write to a closed connection, locking pool structures.
-
-### Affected Files
-* `backend/app/routers/sessions.py`
-* `backend/app/services/ai_service.py`
-
-### Exact Fix
-Created a dedicated thread-safe session generator block specifically tailored for background processing:
-```python
-from app.database import SessionLocal
-
-def process_ai_reply_task(message_id: str):
-    db = SessionLocal()
-    try:
-        # Execute query and AI generation inside local transaction
-        db.commit()
-    finally:
-        db.close()  # Guarantees clean resource release
-```
-
-### Verification Results
-AI replies execute asynchronously and release pool connections cleanly without locking API endpoints.
-
----
-
-## Incident RCA-007: Next.js Stale Closure & Input Clear UX Bugs
-
-### Symptom
-1. Typing a message and clicking Send immediately clears the input field, but if the API fails, the typed message is lost, and only an alert is shown.
-2. Polling intervals overwrite optimistically rendered message bubbles, causing threads to flicker.
-3. Message sends capture old variables due to stale closures in the component lifecycle.
-
-### Root Cause
-1. In `frontend/src/app/dashboard/page.tsx`, `setAgentMsgText('')` executed before `await api.chats.sendMessage()`.
-2. Polling unconditionally replaced the local `messages` state with server data, wiping out in-flight optimistic bubbles.
-3. React `useState` hooks captured stale state inside `setInterval` closures.
-
-### Affected Files
-* `frontend/src/app/dashboard/page.tsx`
-
-### Exact Fix
-1. Implemented inline error banners and an `isSending` state to lock UI controls during sends. If the API fails, input text is restored from the local state.
-2. Utilized refs (`activeConvRef`) to keep references up-to-date across render cycles.
-3. Added optimistic status checks before polling updates:
-```typescript
-setMessages(prev => {
-  const hasPending = prev.some(m => String(m.id).startsWith('optimistic-'));
-  if (hasPending) return prev; // Do not overwrite in-flight sends
-  return freshList;
-});
-```
-
-### Verification Results
-Outbound live overrides render instantly, queue safely, and update fluidly without thread flicker or input losses.
+### Exact Fixes Applied
+1. Locked order verification to strict production signature validation (using `hmac.compare_digest`).
+2. Created a dedicated super-admin manual override route (`POST /admin/tenants/{tenant_id}/activate`) to activate subscriptions when payments fail or require manual intervention, keeping billing logs decoupled.

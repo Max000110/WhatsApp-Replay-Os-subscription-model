@@ -6,13 +6,17 @@ export class AntiBanQueue {
   private socket: WASocket;
   private redisClient: ReturnType<typeof createClient> | null = null;
   private sessionId: string;
+  private tenantId: string;
   private isProcessing = false;
   private redisQueueKey: string;
+  private onStatusUpdate?: (event: string, data: any) => void;
 
-  constructor(socket: WASocket, sessionId: string, redisUrl?: string) {
+  constructor(socket: WASocket, sessionId: string, tenantId: string, redisUrl?: string, onStatusUpdate?: (event: string, data: any) => void) {
     this.socket = socket;
     this.sessionId = sessionId;
+    this.tenantId = tenantId;
     this.redisQueueKey = `whatsapp_queue_${sessionId}`;
+    this.onStatusUpdate = onStatusUpdate;
 
     if (redisUrl) {
       this.redisClient = createClient({ url: redisUrl });
@@ -25,7 +29,7 @@ export class AntiBanQueue {
   /**
    * Pushes outbound message safely to Redis queues or dispatches immediately
    */
-  public async queueMessage(to: string, text: string, options: { simulateTyping?: boolean } = {}) {
+  public async queueMessage(to: string, text: string, messageId?: string, options: { simulateTyping?: boolean } = {}) {
     // Robust JID normalization supporting both raw numbers and pre-formatted JIDs
     let cleanJid = to.trim().replace(/\s+/g, "").replace("+", "");
     if (!cleanJid.endsWith("@s.whatsapp.net") && !cleanJid.includes("@")) {
@@ -36,7 +40,8 @@ export class AntiBanQueue {
       sessionId: this.sessionId,
       to: cleanJid,
       text,
-      simulateTyping: options.simulateTyping ?? true
+      simulateTyping: options.simulateTyping ?? true,
+      messageId
     };
 
     if (this.redisClient && this.redisClient.isOpen) {
@@ -72,9 +77,14 @@ export class AntiBanQueue {
    * Internal mechanism sending standard message with realistic pauses
    */
   private async dispatchSafeMessage(payload: QueueMessage) {
+    const jid = payload.to;
+    const text = payload.text;
+    const messageId = payload.messageId;
+
     try {
-      const jid = payload.to;
-      const text = payload.text;
+      if (messageId && this.onStatusUpdate) {
+        this.onStatusUpdate("ack", { messageId, status: "sending" });
+      }
 
       if (payload.simulateTyping) {
         // Trigger simulated typing indicator
@@ -92,10 +102,45 @@ export class AntiBanQueue {
       const safetyInterval = Math.floor(Math.random() * 4000) + 4000;
       await new Promise((resolve) => setTimeout(resolve, safetyInterval));
 
-      await this.socket.sendMessage(jid, { text });
-      console.log(`[AntiBanQueue - ${this.sessionId}] Safe dispatch succeeded to ${jid}`);
+      console.log(`[AntiBanQueue - ${this.sessionId}] BEFORE socket.sendMessage:`, {
+        tenant_id: this.tenantId,
+        session_id: this.sessionId,
+        jid,
+        message_id: messageId || null,
+        message_body: text,
+        socket_state: this.socket ? "connected" : "disconnected",
+        dispatch_source: "AntiBanQueue"
+      });
+
+      const messageResult = await this.socket.sendMessage(jid, { text });
+      
+      console.log(`[AntiBanQueue - ${this.sessionId}] AFTER socket.sendMessage:`, {
+        tenant_id: this.tenantId,
+        session_id: this.sessionId,
+        jid,
+        message_id: messageId || null,
+        message_body: text,
+        socket_state: this.socket ? "connected" : "disconnected",
+        message_result_id: messageResult?.key?.id || null,
+        dispatch_source: "AntiBanQueue"
+      });
+
+      if (messageId && this.onStatusUpdate && messageResult) {
+        this.onStatusUpdate("ack", {
+          messageId,
+          whatsappMessageId: messageResult.key.id,
+          status: "sent"
+        });
+      }
     } catch (err: any) {
       console.error(`[AntiBanQueue - ${this.sessionId}] Failed safe dispatch:`, err.message);
+      if (messageId && this.onStatusUpdate) {
+        this.onStatusUpdate("ack", {
+          messageId,
+          status: "failed",
+          error: err.message
+        });
+      }
     }
   }
 

@@ -54,6 +54,8 @@ class WebhookData(BaseModel):
     body: Optional[str] = None
     timestamp: Optional[int] = None
     error: Optional[str] = None
+    whatsappMessageId: Optional[str] = None
+    status: Optional[str] = None
 
 class EngineWebhookPayload(BaseModel):
     sessionId: str
@@ -125,6 +127,7 @@ class SendMessageRequest(BaseModel):
     session_id: UUID
     to_phone: str
     content: str
+    client_uuid: Optional[UUID] = None
 
 # RAG & Knowledge Base Schemas
 class KBCreate(BaseModel):

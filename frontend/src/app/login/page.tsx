@@ -74,7 +74,7 @@ export default function LoginPage() {
           <div className="h-12 w-12 rounded-xl bg-gradient-to-tr from-primary to-violet-500 flex items-center justify-center shadow-lg shadow-primary/30 mb-3">
             <Sparkles className="h-6 w-6 text-white animate-pulse" />
           </div>
-          <h2 className="text-2xl font-bold tracking-tight text-white">Antigravity Flow</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-white">ReplyOS</h2>
           <p className="text-xs text-slate-400 mt-1">Multi-Tenant WhatsApp AI SaaS Platform</p>
         </div>
 

@@ -19,7 +19,7 @@ export default function Home() {
     <div className="flex items-center justify-center min-h-screen bg-background text-slate-400">
       <div className="flex flex-col items-center gap-4">
         <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-primary"></div>
-        <p className="text-sm font-medium tracking-wider">Antigravity Loading...</p>
+        <p className="text-sm font-medium tracking-wider">ReplyOS Loading...</p>
       </div>
     </div>
   );

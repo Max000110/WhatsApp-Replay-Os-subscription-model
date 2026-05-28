@@ -25,4 +25,5 @@ export interface QueueMessage {
   to: string;
   text: string;
   simulateTyping?: boolean;
+  messageId?: string;
 }

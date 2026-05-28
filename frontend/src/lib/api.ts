@@ -96,7 +96,7 @@ class ApiClient {
   public chats = {
     list: () => this.request('/chats/'),
     getMessages: (id: string) => this.request(`/chats/${id}/messages`),
-    sendMessage: (payload: { session_id: string; to_phone: string; content: string }) => 
+    sendMessage: (payload: { session_id: string; to_phone: string; content: string; client_uuid?: string }) => 
       this.request('/chats/send', { method: 'POST', body: JSON.stringify(payload) })
   };
 
@@ -119,6 +119,14 @@ class ApiClient {
   public campaigns = {
     list: () => this.request('/campaigns/'),
     create: (payload: any) => this.request('/campaigns/', { method: 'POST', body: JSON.stringify(payload) })
+  };
+
+  // 7. Billing & Subscriptions
+  public billing = {
+    getPlan: () => this.request('/billing/plan'),
+    createOrder: (payload: { plan_tier: string }) => this.request('/billing/create-order', { method: 'POST', body: JSON.stringify(payload) }),
+    verifyPayment: (payload: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string; plan_tier: string }) => 
+      this.request('/billing/verify-payment', { method: 'POST', body: JSON.stringify(payload) })
   };
 }
 

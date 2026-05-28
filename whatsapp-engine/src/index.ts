@@ -42,13 +42,13 @@ app.post("/sessions/init", async (req, res) => {
 
 // REST Router: Send/Queue outbound WhatsApp messages
 app.post("/sessions/send", async (req, res) => {
-  const { sessionId, to, text } = req.body;
+  const { sessionId, to, text, messageId } = req.body;
   if (!sessionId || !to || !text) {
     return res.status(400).json({ error: "sessionId, to, and text are required fields" });
   }
 
   try {
-    const success = await baileysManager.queueOutgoingMessage(sessionId, to, text);
+    const success = await baileysManager.queueOutgoingMessage(sessionId, to, text, messageId);
     if (success) {
       return res.status(200).json({ status: "queued", message: "Message added to outbound anti-ban queue." });
     } else {

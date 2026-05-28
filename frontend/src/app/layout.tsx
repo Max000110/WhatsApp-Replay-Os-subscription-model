@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Antigravity WhatsApp SaaS',
+  title: 'ReplyOS - AI WhatsApp Platform',
   description: 'AI-Powered WhatsApp Marketing & Multi-Agent SaaS Platform',
 }
 

@@ -39,6 +39,11 @@ class Subscription(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     stripe_subscription_id = Column(String(255))
+    razorpay_subscription_id = Column(String(255))
+    razorpay_payment_id = Column(String(255))
+    razorpay_order_id = Column(String(255))
+    billing_cycle = Column(String(50), default="monthly")
+    renewal_state = Column(String(50), default="auto")
     plan_tier = Column(String(50), default="free")
     status = Column(String(50), default="active")
     max_bots = Column(Integer, default=1)
@@ -129,6 +134,7 @@ class Conversation(Base):
     customer_phone = Column(String(30), nullable=False)
     customer_name = Column(String(255))
     is_archived = Column(Boolean, default=False)
+    bot_paused_until = Column(DateTime(timezone=True), nullable=True)
     last_message_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -145,7 +151,8 @@ class Message(Base):
     content = Column(Text, nullable=False)
     media_url = Column(String(512))
     media_type = Column(String(50))
-    status = Column(String(50), default="sent")
+    status = Column(String(50), default="queued")
+    whatsapp_message_id = Column(String(100), unique=True, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -176,6 +183,7 @@ class CampaignLog(Base):
     sent_at = Column(DateTime(timezone=True))
     delivered_at = Column(DateTime(timezone=True))
     read_at = Column(DateTime(timezone=True))
+    whatsapp_message_id = Column(String(100), unique=True, index=True, nullable=True)
 
     campaign = relationship("Campaign", back_populates="logs")
 
@@ -187,4 +195,77 @@ class AIUsageLog(Base):
     tokens_used = Column(Integer, default=0)
     model_name = Column(String(100), nullable=False)
     latency_ms = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SubscriptionEvent(Base):
+    __tablename__ = "subscription_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    event_type = Column(String(100), nullable=False)
+    payload = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class PaymentTransaction(Base):
+    __tablename__ = "payment_transactions"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    order_id = Column(String(255), unique=True, nullable=False)
+    payment_id = Column(String(255))
+    signature = Column(String(255))
+    amount = Column(Integer, nullable=False)
+    status = Column(String(50), default="created")
+    plan_tier = Column(String(50), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class TenantQuota(Base):
+    __tablename__ = "tenant_quotas"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), unique=True, nullable=False)
+    max_bots = Column(Integer, default=1)
+    max_messages = Column(Integer, default=500)
+    bots_used = Column(Integer, default=0)
+    messages_used = Column(Integer, default=0)
+    reset_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class UsageMetric(Base):
+    __tablename__ = "usage_metrics"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    metric_type = Column(String(100), nullable=False)
+    quantity = Column(Integer, default=1)
+    metric_metadata = Column(JSON)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class BillingHistory(Base):
+    __tablename__ = "billing_history"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    transaction_id = Column(UUID(as_uuid=True), ForeignKey("payment_transactions.id", ondelete="SET NULL"))
+    amount = Column(Integer, nullable=False)
+    plan_tier = Column(String(50), nullable=False)
+    invoice_number = Column(String(100))
+    paid_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class AutopayToken(Base):
+    __tablename__ = "autopay_tokens"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    gateway = Column(String(50), default="razorpay")
+    customer_id = Column(String(255), nullable=False)
+    token_id = Column(String(255), nullable=False)
+    status = Column(String(50), default="active")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class RenewalJob(Base):
+    __tablename__ = "renewal_jobs"
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=func.uuid_generate_v4())
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String(50), default="pending")
+    scheduled_at = Column(DateTime(timezone=True), nullable=False)
+    executed_at = Column(DateTime(timezone=True))
+    error_message = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

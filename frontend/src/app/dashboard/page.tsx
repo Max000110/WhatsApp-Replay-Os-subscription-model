@@ -7,7 +7,7 @@ import {
   Send, User, Clock, ShieldCheck, Database, RefreshCw, Smartphone, CheckCircle, AlertCircle, Loader2
 } from 'lucide-react';
 
-type Tab = 'sessions' | 'bots' | 'chats' | 'campaigns' | 'knowledge';
+type Tab = 'sessions' | 'bots' | 'chats' | 'campaigns' | 'knowledge' | 'billing';
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<Tab>('sessions');
@@ -21,6 +21,12 @@ export default function DashboardPage() {
   const [kbs, setKbs] = useState<any[]>([]);
   const [kbDocs, setKbDocs] = useState<any[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
+  
+  // Subscription & Billing states
+  const [currentPlan, setCurrentPlan] = useState<any | null>(null);
+  const [showMockPaymentModal, setShowMockPaymentModal] = useState(false);
+  const [mockOrderDetails, setMockOrderDetails] = useState<any | null>(null);
+  const [isVerifyingPayment, setIsVerifyingPayment] = useState(false);
   
   // Selection states
   const [activeSession, setActiveSession] = useState<any | null>(null);
@@ -74,10 +80,157 @@ export default function DashboardPage() {
       return;
     }
     
-    // Dynamic updates poller (5s interval to sync active session QR/statuses under CPU restrictions)
+    // Fetch initial data
     fetchDashboardCoreData();
-    const interval = setInterval(fetchDashboardCoreData, 5000);
-    return () => clearInterval(interval);
+  }, []);
+
+  // True Realtime WebSocket Synchronization (No more polling!)
+  useEffect(() => {
+    const token = localStorage.getItem('saas_token');
+    if (!token) return;
+
+    let socket: any = null;
+    let reconnectTimeout: any = null;
+    let reconnectAttempts = 0;
+
+    const connectWebSocket = () => {
+      if (socket) {
+        try { socket.close(); } catch {}
+      }
+
+      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${wsProto}//${window.location.host}/api/v1/ws?token=${token}`;
+      console.log('[WebSocket] Connecting to:', wsUrl);
+
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        console.log('[WebSocket] Connected successfully.');
+        reconnectAttempts = 0;
+        // Core sync on connection
+        fetchDashboardCoreData();
+      };
+
+      socket.onmessage = (event: any) => {
+        try {
+          const payload = JSON.parse(event.data);
+          const { type, data } = payload;
+          console.log('[WebSocket] Event received:', type, data);
+
+          if (type === 'message') {
+            if (activeConvRef.current && activeConvRef.current.id === data.conversation_id) {
+              setMessages((prev) => {
+                const map = new Map<string, any>();
+                prev.forEach((m) => map.set(String(m.id), m));
+                
+                // Deduplicate/replace optimistic message matching content and direction
+                let replaced = false;
+                for (const [key, value] of map.entries()) {
+                  if (key.startsWith('optimistic-') && value.content === data.content && value.direction === data.direction) {
+                    map.delete(key);
+                    map.set(String(data.id), data);
+                    replaced = true;
+                    break;
+                  }
+                }
+                
+                if (!replaced) {
+                  map.set(String(data.id), data);
+                }
+                
+                return Array.from(map.values()).sort(
+                  (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                );
+              });
+            }
+
+            setConversations((prev) => {
+              const exists = prev.some((c) => c.id === data.conversation_id);
+              let list = [...prev];
+              if (exists) {
+                list = list.map((c) => {
+                  if (c.id === data.conversation_id) {
+                    return { ...c, last_message_at: data.created_at };
+                  }
+                  return c;
+                });
+              } else {
+                // If it's a new conversation, we trigger a core sync to retrieve full details
+                fetchDashboardCoreData();
+              }
+              return list.sort(
+                (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+              );
+            });
+          }
+
+          else if (type === 'message_status') {
+            if (activeConvRef.current && activeConvRef.current.id === data.conversation_id) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === data.id ? { ...m, status: data.status } : m))
+              );
+            }
+          }
+
+          else if (type === 'session') {
+            setSessions((prev) =>
+              prev.map((s) => (s.id === data.id ? { ...s, status: data.status, qr_code: data.qr_code, phone_number: data.phone_number } : s))
+            );
+            setActiveSession((prev: any) => {
+              if (prev && prev.id === data.id) {
+                return { ...prev, status: data.status, qr_code: data.qr_code, phone_number: data.phone_number };
+              }
+              return prev;
+            });
+          }
+
+          else if (type === 'campaign') {
+            setCampaigns((prev) =>
+              prev.map((c) => (c.id === data.id ? { ...c, status: data.status } : c))
+            );
+          }
+
+          else if (type === 'campaign_status') {
+            const { campaign: freshCampaign } = data;
+            setCampaigns((prev) =>
+              prev.map((c) => (c.id === freshCampaign.id ? { ...c, status: freshCampaign.status } : c))
+            );
+          }
+
+          else if (type === 'kb_document') {
+            setKbDocs((prev) =>
+              prev.map((doc) => (doc.id === data.id ? { ...doc, status: data.status } : doc))
+            );
+          }
+
+        } catch (err) {
+          console.error('[WebSocket] Failed parsing event:', err);
+        }
+      };
+
+      socket.onclose = (e: any) => {
+        console.warn('[WebSocket] Closed. Reconnecting...', e.code, e.reason);
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+        reconnectAttempts++;
+        reconnectTimeout = setTimeout(() => {
+          connectWebSocket();
+        }, delay);
+      };
+
+      socket.onerror = (err: any) => {
+        console.error('[WebSocket] Error:', err);
+      };
+    };
+
+    connectWebSocket();
+
+    return () => {
+      if (socket) {
+        socket.onclose = null;
+        socket.close();
+      }
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    };
   }, []);
 
   const fetchDashboardCoreData = useCallback(async () => {
@@ -86,7 +239,6 @@ export default function DashboardPage() {
       setSessions(sessList);
 
       // Preserve active QR focus if updated in backend — use ref to avoid stale closure
-      const currentActiveSession = activeConvRef.current;
       setActiveSession((prev: any) => {
         if (prev) {
           const found = sessList.find((s: any) => s.id === prev.id);
@@ -102,7 +254,6 @@ export default function DashboardPage() {
       setConversations(convList);
 
       // CRITICAL FIX: Keep activeConv in sync with fresh server data.
-      // Without this, session_id/customer_phone can be stale causing 400 errors on send.
       if (activeConvRef.current) {
         const freshConv = convList.find((c: any) => c.id === activeConvRef.current.id);
         if (freshConv) {
@@ -120,6 +271,13 @@ export default function DashboardPage() {
 
       const campaignList = await api.campaigns.list();
       setCampaigns(campaignList);
+
+      try {
+        const planInfo = await api.billing.getPlan();
+        setCurrentPlan(planInfo);
+      } catch (billingErr) {
+        console.error('Failed fetching subscription plan:', billingErr);
+      }
     } catch (err: any) {
       console.error('Core sync failed:', err.message);
     }
@@ -132,15 +290,33 @@ export default function DashboardPage() {
       const fetchHistory = async () => {
         try {
           const msgList = await api.chats.getMessages(convId);
-          // Use functional update to avoid overwriting optimistic messages that
-          // haven't been ACKed yet (those have id prefixed with 'optimistic-')
-          setMessages(prev => {
-            const hasPending = prev.some((m: any) => String(m.id).startsWith('optimistic-'));
-            if (hasPending) {
-              // Don't overwrite while a send is in flight to avoid flash
-              return prev;
-            }
-            return msgList;
+          setMessages((prev) => {
+            const map = new Map<string, any>();
+            // Keep existing optimistic bubbles
+            prev.forEach((m) => {
+              if (String(m.id).startsWith('optimistic-')) {
+                map.set(String(m.id), m);
+              }
+            });
+            // Overwrite/add fetched messages
+            msgList.forEach((m: any) => {
+              // Deduplicate/replace optimistic message matching content and direction
+              let replaced = false;
+              for (const [key, value] of map.entries()) {
+                if (key.startsWith('optimistic-') && value.content === m.content && value.direction === m.direction) {
+                  map.delete(key);
+                  map.set(String(m.id), m);
+                  replaced = true;
+                  break;
+                }
+              }
+              if (!replaced) {
+                map.set(String(m.id), m);
+              }
+            });
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+            );
           });
         } catch (err: any) {
           console.error('Chat history fetch failed:', err.message);
@@ -148,8 +324,6 @@ export default function DashboardPage() {
       };
       
       fetchHistory();
-      const chatInterval = setInterval(fetchHistory, 3000);
-      return () => clearInterval(chatInterval);
     } else {
       setMessages([]);
       setSendError('');
@@ -242,7 +416,19 @@ export default function DashboardPage() {
     setIsSending(true);
 
     // ── Optimistic render: show the message immediately in the thread ──
-    const optimisticId = `optimistic-${Date.now()}`;
+    const generateUUID = () => {
+      if (typeof window !== 'undefined' && window.crypto && window.crypto.randomUUID) {
+        return window.crypto.randomUUID();
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0,
+          v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    };
+
+    const clientUuid = generateUUID();
+    const optimisticId = clientUuid;
     const optimisticMsg = {
       id: optimisticId,
       conversation_id: conv.id,
@@ -262,7 +448,8 @@ export default function DashboardPage() {
       const res = await api.chats.sendMessage({
         session_id: conv.session_id,
         to_phone: conv.customer_phone,
-        content: txt
+        content: txt,
+        client_uuid: clientUuid
       });
 
       // Replace optimistic bubble with real server response (has real id + status)
@@ -336,6 +523,91 @@ export default function DashboardPage() {
     }
   };
 
+  // Load Razorpay Checkout script dynamically
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    document.body.appendChild(script);
+    return () => {
+      try {
+        document.body.removeChild(script);
+      } catch {}
+    };
+  }, []);
+
+  const handleUpgradePlan = async (tier: string) => {
+    setActionLoading(true);
+    setError('');
+    try {
+      const order = await api.billing.createOrder({ plan_tier: tier });
+      if (order.is_mock) {
+        setMockOrderDetails({ ...order, plan_tier: tier });
+        setShowMockPaymentModal(true);
+      } else {
+        const options = {
+          key: order.razorpay_key_id,
+          amount: order.amount,
+          currency: order.currency,
+          name: "ReplyOS",
+          description: `Upgrade to ${tier.toUpperCase()}`,
+          order_id: order.razorpay_order_id,
+          handler: async function (response: any) {
+            setActionLoading(true);
+            try {
+              const res = await api.billing.verifyPayment({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                plan_tier: tier
+              });
+              setCurrentPlan(res);
+              alert(`Successfully upgraded to ${tier.toUpperCase()} plan!`);
+            } catch (err: any) {
+              alert(`Payment verification failed: ${err.message}`);
+            } finally {
+              setActionLoading(false);
+            }
+          },
+          prefill: {
+            name: tenantName,
+            email: "billing@replyos.com"
+          },
+          theme: {
+            color: "#6366f1"
+          }
+        };
+        const rzp = new (window as any).Razorpay(options);
+        rzp.open();
+      }
+    } catch (err: any) {
+      alert(`Failed to initiate upgrade: ${err.message}`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleSimulatePayment = async () => {
+    if (!mockOrderDetails) return;
+    setIsVerifyingPayment(true);
+    try {
+      const res = await api.billing.verifyPayment({
+        razorpay_order_id: mockOrderDetails.razorpay_order_id,
+        razorpay_payment_id: `pay_mock_${Math.random().toString(36).substring(7)}`,
+        razorpay_signature: `sig_mock_${Math.random().toString(36).substring(7)}`,
+        plan_tier: mockOrderDetails.plan_tier
+      });
+      setCurrentPlan(res);
+      setShowMockPaymentModal(false);
+      setMockOrderDetails(null);
+      alert(`[Sandbox Success] Upgraded to ${mockOrderDetails.plan_tier.toUpperCase()} plan successfully!`);
+    } catch (err: any) {
+      alert(`Simulation verification failed: ${err.message}`);
+    } finally {
+      setIsVerifyingPayment(false);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-background relative overflow-hidden text-slate-100">
       
@@ -349,8 +621,8 @@ export default function DashboardPage() {
             <Smartphone className="h-4.5 w-4.5 text-white" />
           </div>
           <div>
-            <h1 className="font-bold text-sm text-white leading-none">Antigravity</h1>
-            <span className="text-[10px] text-slate-400 font-semibold tracking-widest uppercase">Flow Console</span>
+            <h1 className="font-bold text-sm text-white leading-none">ReplyOS</h1>
+            <span className="text-[10px] text-slate-400 font-semibold tracking-widest uppercase">Admin Panel</span>
           </div>
         </div>
 
@@ -415,6 +687,18 @@ export default function DashboardPage() {
             <FileText className="h-4.5 w-4.5" />
             RAG Documents
           </button>
+
+          <button
+            onClick={() => setActiveTab('billing')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-semibold transition ${
+              activeTab === 'billing' 
+                ? 'bg-primary text-white shadow-md shadow-primary/15' 
+                : 'text-slate-400 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <ShieldCheck className="h-4.5 w-4.5" />
+            Subscription & Plans
+          </button>
         </nav>
 
         {/* Footer Admin Zone */}
@@ -425,7 +709,7 @@ export default function DashboardPage() {
             </div>
             <div className="text-xs truncate max-w-[120px]">
               <p className="font-semibold text-slate-200">Tenant Space</p>
-              <p className="text-[10px] text-slate-500">Free Tier Account</p>
+              <p className="text-[10px] text-slate-500 capitalize">{currentPlan?.plan_tier || 'Free'} Account</p>
             </div>
           </div>
           <button 
@@ -449,6 +733,7 @@ export default function DashboardPage() {
             {activeTab === 'chats' && <><MessageSquare className="h-5 w-5 text-primary" /> Customer Inbox & Live Override</>}
             {activeTab === 'campaigns' && <><Megaphone className="h-5 w-5 text-primary" /> Marketing Broadcast campaigns</>}
             {activeTab === 'knowledge' && <><Database className="h-5 w-5 text-primary" /> RAG Knowledge Store</>}
+            {activeTab === 'billing' && <><ShieldCheck className="h-5 w-5 text-primary" /> Subscription & Plans</>}
           </h2>
           <div className="flex items-center gap-2 text-xs text-slate-400 bg-white/5 py-1.5 px-3 rounded-full border border-white/5">
             <span className="h-2 w-2 rounded-full bg-accent animate-pulse"></span>
@@ -1099,8 +1384,221 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {/* ======================================= */}
+          {/* TAB 6: BILLING & SUBSCRIPTIONS */}
+          {/* ======================================= */}
+          {activeTab === 'billing' && (
+            <div className="space-y-8 max-w-7xl mx-auto pb-12">
+              
+              {/* Current Subscription Status Panel */}
+              <div className="bg-card border border-white/5 p-6 rounded-xl shadow-lg relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-primary/5 rounded-full blur-[80px] pointer-events-none"></div>
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                  <div>
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      <ShieldCheck className="h-5 w-5 text-accent" /> Active Workspace Plan
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-1">Manage billing, subscription limits, and upgrades below.</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Status:</span>
+                    <span className="text-xs font-bold uppercase tracking-wider px-3 py-1 bg-accent/10 text-accent border border-accent/20 rounded-full">
+                      {currentPlan?.status || 'Active'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-8 pt-6 border-t border-white/5">
+                  <div className="p-4 bg-slate-950/40 border border-white/5 rounded-xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Plan Tier</p>
+                    <p className="text-lg font-extrabold text-white mt-1 capitalize">{currentPlan?.plan_tier || 'Free'}</p>
+                  </div>
+                  <div className="p-4 bg-slate-950/40 border border-white/5 rounded-xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">WhatsApp Session Capacity</p>
+                    <p className="text-lg font-extrabold text-white mt-1">
+                      {sessions.filter(s => s.status === 'connected').length} / {currentPlan?.max_bots || 1} Connected
+                    </p>
+                  </div>
+                  <div className="p-4 bg-slate-950/40 border border-white/5 rounded-xl">
+                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Monthly Outbound Cap</p>
+                    <p className="text-lg font-extrabold text-white mt-1">
+                      {currentPlan?.max_messages_per_month || 500} messages/mo
+                    </p>
+                  </div>
+                </div>
+
+                {currentPlan?.current_period_end && currentPlan?.plan_tier !== 'free' && (
+                  <p className="text-[10px] text-slate-500 mt-4 font-semibold">
+                    Billing Cycle Ends: {new Date(currentPlan.current_period_end).toLocaleDateString()}
+                  </p>
+                )}
+              </div>
+
+              {/* Pricing Cards Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 items-stretch">
+                {[
+                  {
+                    tier: 'free',
+                    price: '₹0',
+                    desc: 'For small operators beginning automated scaling.',
+                    maxBots: '1 Active WhatsApp session',
+                    maxMsgs: '500 Outbound Messages/Month',
+                    features: ['1 Chatbot Assistant', 'Basic Ollama Replies', 'Mock RAG Context', 'Community Forum support']
+                  },
+                  {
+                    tier: 'starter',
+                    price: '₹999',
+                    desc: 'Ideal for small retail businesses or regional coaching centers.',
+                    maxBots: '2 Active WhatsApp sessions',
+                    maxMsgs: '5,000 Outbound Messages/Month',
+                    features: ['Unlimited Chatbots catalog', 'Fast Ollama Inference', '2 RAG Ingest Documents', 'Email/Ticket Support']
+                  },
+                  {
+                    tier: 'pro',
+                    price: '₹2,999',
+                    desc: 'Perfect for fast-growing real estate & ecommerce brands.',
+                    maxBots: '5 Active WhatsApp sessions',
+                    maxMsgs: '50,000 Outbound Messages/Month',
+                    features: ['Campaign Analytics dashboards', 'Deep Vector Store RAG search', '50 RAG Ingest Documents', 'Priority Chat Support']
+                  },
+                  {
+                    tier: 'agency',
+                    price: '₹9,999',
+                    desc: 'Built for marketing agencies managing multiple lines.',
+                    maxBots: '20 Active WhatsApp sessions',
+                    maxMsgs: '1,000,000 Outbound Messages/Month',
+                    features: ['SaaS Tenant isolation rules', 'Dedicated API Gateway access', 'Unlimited RAG context maps', '24/7 Account SRE manager']
+                  }
+                ].map((plan) => {
+                  const isActive = (currentPlan?.plan_tier || 'free') === plan.tier;
+                  return (
+                    <div 
+                      key={plan.tier}
+                      className={`bg-card border rounded-xl p-6 shadow-lg flex flex-col justify-between relative transition-transform hover:scale-[1.01] ${
+                        isActive 
+                          ? 'border-primary shadow-primary/5 ring-1 ring-primary' 
+                          : 'border-white/5'
+                      }`}
+                    >
+                      {isActive && (
+                        <div className="absolute top-[-10px] left-1/2 transform -translate-x-1/2 bg-primary text-white text-[9px] uppercase font-bold tracking-widest px-3 py-1 rounded-full border border-primary/20 shadow-md">
+                          Current Tier
+                        </div>
+                      )}
+                      
+                      <div>
+                        <h4 className="font-extrabold text-sm capitalize text-white mb-1 flex items-center justify-between">
+                          {plan.tier}
+                        </h4>
+                        <div className="flex items-baseline gap-1 my-4">
+                          <span className="text-2xl font-black text-white">{plan.price}</span>
+                          <span className="text-slate-500 text-xs font-semibold">/month</span>
+                        </div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed mb-6">{plan.desc}</p>
+                        
+                        <ul className="space-y-2 border-t border-white/5 pt-4 mb-6">
+                          <li className="text-[11px] font-bold text-accent flex items-center gap-1.5">
+                            <span className="h-1.5 w-1.5 bg-accent rounded-full"></span> {plan.maxBots}
+                          </li>
+                          <li className="text-[11px] font-bold text-accent flex items-center gap-1.5">
+                            <span className="h-1.5 w-1.5 bg-accent rounded-full"></span> {plan.maxMsgs}
+                          </li>
+                          {plan.features.map((f, i) => (
+                            <li key={i} className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                              <span className="h-1.5 w-1.5 bg-slate-600 rounded-full"></span> {f}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      <button
+                        onClick={() => handleUpgradePlan(plan.tier)}
+                        disabled={isActive || actionLoading || plan.tier === 'free'}
+                        className={`w-full py-2 rounded-lg text-xs font-bold transition ${
+                          isActive 
+                            ? 'bg-slate-800 text-slate-400 cursor-not-allowed border border-white/5'
+                            : plan.tier === 'free'
+                              ? 'bg-slate-900 text-slate-500 cursor-not-allowed border border-white/5'
+                              : 'bg-primary hover:bg-primary-hover text-white shadow-md shadow-primary/10'
+                        }`}
+                      >
+                        {isActive ? 'Current Plan' : plan.tier === 'free' ? 'Default Plan' : `Upgrade to ${plan.tier}`}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         </div>
       </main>
+
+      {/* 3. MOCK PAYMENT MODAL OVERLAY */}
+      {showMockPaymentModal && mockOrderDetails && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md p-6 shadow-2xl relative animate-in fade-in zoom-in duration-200">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-primary/10 rounded-full blur-[40px] pointer-events-none"></div>
+            
+            <div className="flex items-center gap-3 border-b border-white/5 pb-4 mb-6">
+              <div className="h-10 w-10 rounded-lg bg-yellow-500/10 flex items-center justify-center border border-yellow-500/20">
+                <ShieldCheck className="h-5 w-5 text-yellow-500" />
+              </div>
+              <div>
+                <h3 className="font-bold text-sm text-white">Razorpay Sandbox Gateway</h3>
+                <p className="text-[10px] text-slate-400">Mock Order Verification Interface</p>
+              </div>
+            </div>
+
+            <div className="space-y-4 bg-slate-950/40 p-4 rounded-xl border border-white/5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Order ID:</span>
+                <span className="font-mono text-slate-300 font-semibold">{mockOrderDetails.razorpay_order_id}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Upgrade Tier:</span>
+                <span className="capitalize font-bold text-accent">{mockOrderDetails.plan_tier}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Amount Due:</span>
+                <span className="font-extrabold text-white">₹{(mockOrderDetails.amount / 100).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Currency:</span>
+                <span className="text-slate-300 font-bold">{mockOrderDetails.currency}</span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 mt-6">
+              <button
+                onClick={handleSimulatePayment}
+                disabled={isVerifyingPayment}
+                className="w-full bg-primary hover:bg-primary-hover text-white py-2.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-2"
+              >
+                {isVerifyingPayment ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Verifying mock signature...
+                  </>
+                ) : (
+                  'Simulate Successful Payment'
+                )}
+              </button>
+              
+              <button
+                onClick={() => {
+                  setShowMockPaymentModal(false);
+                  setMockOrderDetails(null);
+                }}
+                disabled={isVerifyingPayment}
+                className="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 py-2.5 rounded-lg text-xs font-bold transition"
+              >
+                Cancel Sandbox Checkout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

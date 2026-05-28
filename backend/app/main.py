@@ -3,11 +3,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
 from app.auth import router as auth_router
-from app.routers import sessions, bots, chats, knowledge, campaigns
+from app.routers import sessions, bots, chats, knowledge, campaigns, websockets, billing, admin
+
+from sqlalchemy import text
 
 # Auto-create tables on container startup if migration manager is not initialized
 try:
     Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS whatsapp_message_id VARCHAR(100) UNIQUE;"))
+        conn.execute(text("ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS whatsapp_message_id VARCHAR(100) UNIQUE;"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS bot_paused_until TIMESTAMP WITH TIME ZONE;"))
+        conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_subscription_id VARCHAR(255);"))
+        conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_payment_id VARCHAR(255);"))
+        conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_order_id VARCHAR(255);"))
+        conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_cycle VARCHAR(50) DEFAULT 'monthly';"))
+        conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_state VARCHAR(50) DEFAULT 'auto';"))
+        conn.commit()
     print("[FastAPI] Database structures synchronized successfully.")
 except Exception as e:
     print("[FastAPI] Warning: DB sync encountered exception (checking tables exist):", e)
@@ -50,6 +62,9 @@ app.include_router(bots.router, prefix=settings.API_V1_STR)
 app.include_router(chats.router, prefix=settings.API_V1_STR)
 app.include_router(knowledge.router, prefix=settings.API_V1_STR)
 app.include_router(campaigns.router, prefix=settings.API_V1_STR)
+app.include_router(websockets.router, prefix=settings.API_V1_STR)
+app.include_router(billing.router, prefix=settings.API_V1_STR)
+app.include_router(admin.router, prefix=settings.API_V1_STR)
 
 @app.get("/api/v1")
 def home():
