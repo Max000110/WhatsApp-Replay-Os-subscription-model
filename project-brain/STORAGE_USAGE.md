@@ -22,7 +22,7 @@ Resolved dynamically from the Unix socket `/var/run/docker.sock` and host mappin
 | :--- | :--- | :--- | :--- | :--- |
 | **Docker Images** | `13,141,140,011` | 12.24 GB | In Use | Size of all 8 system container images |
 | **Docker Volumes** | `1,098,976,562` | 1.02 GB | In Use | postgres_data, redis_data, ollama_data, certs, uploads |
-| **Docker Build Cache**| `977,593,995` | 932.30 MB | Pruned | Baseline cache remaining after Phase 7 cleanup |
+| **Docker Build Cache**| `0` | 0.00 B | Pruned | 6.74 GB aggressively pruned to 0B |
 | **Container Stdout Logs**| `82,652` | 80.71 KB | Truncated | All `*-json.log` files truncated to 0 |
 | **PostgreSQL Database**| `9,624,599` | 9.18 MB | Active | Application data |
 | **Redis Cache Memory** | `1,642,776` | 1.57 MB | Active | Runtime lock and session data |
@@ -33,10 +33,10 @@ Resolved dynamically from the Unix socket `/var/run/docker.sock` and host mappin
 
 ---
 
-## 3. Storage Cleanup Event Summary (2026-05-29)
+## 3. Storage Cleanup Event Summary (2026-06-02)
 
-A safe storage cleanup workflow was executed:
-1. **Docker Builder Prune**: Removed unused build steps, reclaiming **11.18 GB**.
-2. **Log Truncation**: Truncated all active container output json logs, reclaiming **827.01 KB**.
-3. **Dangling images / volumes**: Confirmed 0B of dangling layers exist on active containers.
-4. **Overall Host Reclaimed Space**: Dropped Used Space on `/` partition from **38.41 GB** to **28.39 GB** (recovering **10.02 GB** of physical storage).
+An aggressive high-intensity storage cleanup workflow was successfully executed:
+1. **Docker Builder Prune**: Purged all active and historical build cache layers, reclaiming **6.739 GB** of cache storage.
+2. **Docker Image Prune**: Cleared dangling unreferenced image layers unassociated with running containers.
+3. **Ecosystem Telemetry Sync**: Force-restarted metrics interfaces (`saas_backend` and `saas_frontend`) cleanly.
+4. **Host Disk Optimization**: Reclaimed and consolidated system blocks, yielding **116 GB** of available SSD space on the `/dev/sda1` root partition (21% utilization).

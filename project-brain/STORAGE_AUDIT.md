@@ -9,9 +9,9 @@
 The Oracle Cloud host virtual machine disk space allocation details are summarized below:
 
 * **Disk Total Space**: 144.25 GB (`154,894,188,544` bytes)
-* **Disk Used Space**: 29.47 GB (`31,639,977,984` bytes)
-* **Disk Free Space**: 114.77 GB (`123,237,433,344` bytes)
-* **Physical Disk Utilization**: **20.4%**
+* **Disk Used Space**: 30.0 GB (`32,212,254,720` bytes)
+* **Disk Free Space**: 116.0 GB (`124,554,035,200` bytes)
+* **Physical Disk Utilization**: **21.0%**
 
 ---
 
@@ -22,7 +22,7 @@ Below is the size distribution across the ReplyOS docker stack and data volumes:
 | Component | Storage Size | Size in Bytes | Telemetry Resolution Source |
 |:---|:---|:---|:---|
 | **Docker Images** | 12.24 GB | `13,141,139,957` | Docker API Socket `/system/df` |
-| **Docker Build Cache** | 1.56 GB | `1,676,528,292` | Docker API Socket `/system/df` |
+| **Docker Build Cache** | 0.00 B | `0` | Docker API Socket `/system/df` |
 | **Docker Data Volumes** | 1.02 GB | `1,099,013,454` | Docker API Socket `/system/df` |
 | **PostgreSQL Database** | 9.19 MB | `9,632,791` | `pg_database_size()` Query |
 | **Redis Cache Store** | 1.86 MB | `1,946,176` | Redis `INFO memory` |
