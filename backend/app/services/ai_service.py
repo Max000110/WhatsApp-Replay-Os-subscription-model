@@ -120,12 +120,25 @@ def assemble_layered_prompt(bot: Chatbot, conv: Conversation = None, kb_context:
         f"===================================\n"
     )
 
-    # LAYER 5: Products Catalog
-    l5_products = (
-        f"=== LAYER 5: PRODUCTS CATALOG ===\n"
-        f"{bot.products or 'No specific products catalog configured.'}\n"
-        f"==================================\n"
-    )
+    # LAYER 5: PRODUCTS CATALOG (HYBRID CONTEXT ROUTING - PRIORITIZED RAG OVER STATIC)
+    if kb_context:
+        l5_products = (
+            "=== LAYER 5: DYNAMIC REAL-TIME CATALOG MATRIX (RAG - ABSOLUTE PRIORITY) ===\n"
+            "CRITICAL: The dynamic vector retrieval content below contains live verified catalog data.\n"
+            "You MUST extract prices, names, and items strictly from this block.\n"
+            "Never fallback to generic descriptions, default placeholders, or guess food categories.\n"
+            "[LIVE VERIFIED CATALOG DATA]:\n"
+            f"{kb_context}\n"
+            "============================================================================\n"
+        )
+        # Clear l9_rag since it's already integrated in high-priority Layer 5 to avoid duplication
+        l9_rag = ""
+    else:
+        l5_products = (
+            "=== LAYER 5: PRODUCTS CATALOG ===\n"
+            f"{bot.products or 'No specific products catalog configured.'}\n"
+            "==================================\n"
+        )
 
     # LAYER 6: Commercial Rules, Pricing & Business Policies
     l6_pricing = (
@@ -248,6 +261,28 @@ def classify_and_serve_fast_path(bot: Chatbot, message: str) -> str | None:
     import re
     words = set(re.findall(r'\b\w+\b', msg_lower))
     
+    # 1. Multi-intent / Compound query check: if query has multiple keywords from different categories, bypass fast path
+    categories_matched = 0
+    if words & {"hi", "hello", "hey", "hola", "namaste", "greetings"}:
+        categories_matched += 1
+    if (words & {"hours", "timing", "timings", "schedule", "availability"}) or "working hours" in msg_lower:
+        categories_matched += 1
+    if words & {"location", "address", "where", "situated", "located", "direction", "directions"}:
+        categories_matched += 1
+    if (words & {"price", "pricing", "cost", "fee", "rate", "rates", "charge", "charges", "fare", "price list"}) or "how much" in msg_lower:
+        categories_matched += 1
+    if words & {"services", "service", "offer", "offers", "facility", "facilities", "ac", "non ac", "rooms"}:
+        categories_matched += 1
+    if words & {"products", "product", "catalog", "items", "buy", "menu"}:
+        categories_matched += 1
+    if words & {"contact", "phone", "email", "support", "call", "number"}:
+        categories_matched += 1
+        
+    has_connectors = any(conn in msg_lower for conn in ["and", "aur", ","])
+    if categories_matched > 1 or (categories_matched == 1 and has_connectors):
+        print(f"[Fast-Path] Compound query/multi-intent detected (categories={categories_matched}, connectors={has_connectors}). Bypassing fast path.")
+        return None
+    
     # Greetings
     greetings_kw = {"hi", "hello", "hey", "hola", "namaste", "greetings"}
     if words & greetings_kw or msg_lower in ["good morning", "good afternoon", "good evening"]:
@@ -278,9 +313,12 @@ def classify_and_serve_fast_path(bot: Chatbot, message: str) -> str | None:
         if bot.services:
             return f"We provide the following services:\n{bot.services}"
             
-    # Products
+    # Products / Catalog / Menu (Bypass fast-path if RAG is active to route catalog questions to Ollama / vector menu index)
     products_kw = {"products", "product", "catalog", "items", "buy", "menu"}
     if words & products_kw:
+        if bot.rag_enabled:
+            print("[Fast-Path] RAG is enabled. Bypassing product fast path for dynamic vector lookup.")
+            return None
         if bot.products:
             return f"Here is our product catalog:\n{bot.products}"
             

@@ -120,3 +120,7 @@
 ### Action 273 (Operational Stabilization Matrix & E2E Validation Pass)
 273. **ENFORCED NATIVE AUTH MATRIX & INJECTED SELF-CORRECTION LOOP**: Wiped all third-party identity bindings, injected JWT environment variables (`JWT_SECRET`, `JWT_ALGORITHM`), dynamically synchronized all missing Postgres/SQLAlchemy conversation memory fields (`customer_preferences`, `past_interactions_summary`, `open_tickets`, `lead_status`), ran cache-busting docker builds, re-indexed local metadata structures, and established E2E verification parity. Executed full validation runs achieving a 100% SUCCESS state.
 
+### Action 274 (Hybrid Context Ingestion & RAG Catalog Priority Resolution)
+274. **RE-ENGINEERED PROMPT HIERARCHY & VECTOR PRIORITY COMPILATION**: Refactored the context compiler to implement hybrid context routing. Merged dynamic RAG chunks directly into `LAYER 5` of the unified prompt, giving absolute priority to retrieved catalog vectors over static bot options. Updated fast-path classifier checks in `ai_service.py` to bypass static deflect caches on product/catalog queries when RAG is active or when multi-intent connectors (`and`, `aur`, `,`) are matched. Restored all regression suites to a 100% pass state.
+
+

@@ -112,3 +112,14 @@
   - Implemented standard native browser `URLSearchParams` serialization loops to dynamically serialize all parameter options, guaranteeing proper `%20` hex space encoding.
   - Rebuilt the Next.js `frontend` container using cache-busting compile-time flags (`docker compose build --no-cache frontend`) to force-compile the static assets.
 * **Verification Proof**: Host and container E2E regression tests pass successfully with a 100% success rate.
+
+---
+
+## 9. Hybrid Context Ingestion & Catalog Routing (Action 274)
+* **Status**: ✅ 100% COMPLETE & VERIFIED (100% PASS)
+* **Symptom**: Context collision between the static `AI Bot Config` payload ("always items") and the dynamic `RAG Documents` catalog store, resulting in hallucinated fallback responses (e.g., displaying random non-veg templates instead of the user's uploaded menu).
+* **Resolution**:
+  - Refactored `assemble_layered_prompt` prompt compiler inside [ai_service.py](file:///home/ubuntu/whatsapp-ai-saas/backend/app/services/ai_service.py) to implement hybrid context routing prioritizing dynamic pgvector search chunks.
+  - Formatted a unified execution token chain where live verified catalog data strictly overrides contradictory static guidelines.
+  - Injected compound query multi-intent detection and RAG checks inside `classify_and_serve_fast_path` to bypass fast path cache deflection on product/catalog queries when RAG is active or when multi-intent connectors are matched.
+* **Verification Proof**: Deployed changes, restarted microservices stack, and executed both platform regression and enterprise suites achieving 100% E2E verification success.

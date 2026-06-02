@@ -40,6 +40,12 @@ This document catalogues all currently identified open bugs, infrastructure limi
 - **Symptom**: Live human agent overrides failed to flush Ollama loop and update dashboard badges.
 - **Resolution**: Deployed `bot_override` tracking in `Conversation` model and forced `CONNECTED_GREEN` websocket state transmissions.
 
+### BUG-007 — Static Config and RAG Catalog Collision
+- **Priority**: P1 (Context Assembly)
+- **Status**: ✅ RESOLVED & VERIFIED
+- **Symptom**: Context collision between static `AI Bot Config` and dynamic `RAG Documents` catalog store (e.g. food menus), resulting in default templates displaying instead of uploaded files.
+- **Resolution**: Implemented hybrid context routing in `assemble_layered_prompt` prioritizing RAG vector chunks in Layer 5. Injected compound query multi-intent detection and RAG checks inside fast-path intent classifier to prevent static deflection caches when RAG catalog matching is available.
+
 ---
 
 ## 2. Active Operational Risks
