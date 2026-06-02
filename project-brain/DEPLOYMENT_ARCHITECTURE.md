@@ -66,3 +66,15 @@ Nginx acts as the reverse proxy gateway, enforcing rate limiting and timeout con
 * **API proxy**: Traffic prepended with `/api/v1` is proxied to `http://backend:8000` with:
   * `proxy_read_timeout 3600s` to keep WebSockets connections open.
   * Explicit proxy buffers (`proxy_buffers 4 256k`) to handle large JSON responses without overflow errors.
+
+---
+
+## 5. Local Repository & Upstream Tracking Specs
+
+Following the decommissioning of dead parameters and establishment of stable native credential layers, the entire source tree is tracked via a localized repository layout.
+- **Repository Scope**: `~/whatsapp-ai-saas/`
+- **Default Production Line Branch**: `main`
+- **Upstream Private Cloud Remote**: `origin` -> `https://github.com/Max000110/WhatsApp-Replay-Os-subscription-model.git`
+- **Sync Protocol**: Secured via personal cryptographic access token (PAT) authentication to bypass interactive shell challenges.
+- **Staging Guardrules**: Enforced via `.gitignore` to prevent leakage of environment variables (`.env`), Python caches (`__pycache__/`, `*.pyc`), and local application assets (`node_modules/`, `.next/`, `Ollama_data/`).
+
