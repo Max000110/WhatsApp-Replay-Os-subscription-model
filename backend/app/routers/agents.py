@@ -94,8 +94,9 @@ async def assign_conversation(payload: AgentAssignRequest, tenant_id: UUID = Dep
     if not agent:
         raise HTTPException(status_code=404, detail="Support agent not found.")
 
-    # Call dynamic live agent handoff logic override
-    await trigger_live_agent_override(str(conv.id), str(agent.id), db, str(tenant_id))
+    # Call dynamic live agent handoff logic override from session_service
+    from app.services.session_service import session_service
+    await session_service.trigger_live_agent_override(str(conv.id), str(agent.id), db, str(tenant_id))
     
     # Reload and bind ORM object fields
     db.refresh(conv)

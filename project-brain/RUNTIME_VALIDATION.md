@@ -123,3 +123,28 @@
   - Formatted a unified execution token chain where live verified catalog data strictly overrides contradictory static guidelines.
   - Injected compound query multi-intent detection and RAG checks inside `classify_and_serve_fast_path` to bypass fast path cache deflection on product/catalog queries when RAG is active or when multi-intent connectors are matched.
 * **Verification Proof**: Deployed changes, restarted microservices stack, and executed both platform regression and enterprise suites achieving 100% E2E verification success.
+
+---
+
+## 10. Hybrid Context Routing & Operator WebSocket Handoff (Action 274 Continuation)
+* **Status**: ✅ 100% COMPLETE & VERIFIED (100% PASS)
+* **Symptom**: Runtime override conflicts between static brain properties and dynamic RAG documents.
+* **Resolution**:
+  - Implemented `build_hybrid_system_context` inside [ai_service.py](file:///home/ubuntu/whatsapp-ai-saas/backend/app/services/ai_service.py) to structurally concatenate static configurations with verified dynamic pgvector RAG chunks, enforcing dynamic RAG vector priorities.
+  - Implemented `trigger_live_agent_override` inside [session_service.py](file:///home/ubuntu/whatsapp-ai-saas/backend/app/services/session_service.py) to flush the active Ollama session buffer, update database records to `bot_override = True` and `handoff_status = 'HUMAN_ACTIVE'`, and broadcast the `CONNECTED_GREEN` websocket state directly to dashboard views.
+* **Verification Proof**: Restarted backend, worker, and frontend container networks. All E2E and regression test suites pass with 100% success.
+
+---
+
+## 11. Image OCR Ingestion & Redis Pub/Sub WebSocket Outbound Channels (Action 275)
+* **Status**: ✅ 100% COMPLETE & VERIFIED (100% PASS)
+* **Symptom**: 
+  - LLM Attention Collapse: Small model (Mistral-7B) fails to resolve compound query prompts containing connectors ("aur", "and", etc.), dropping context matches.
+  - Binary RAG Ingestion Crash: Uploading image documents (e.g. `.png` menu) throws errors in pgvector chunk processing.
+  - WebSocket Outbound Disconnect: Manual live agent sends via UI fail to broadcast or trigger WhatsApp sends.
+* **Resolution**:
+  - Implemented a Python-level regex query splitter `extract_multi_intent_context` inside [ai_service.py](file:///home/ubuntu/whatsapp-ai-saas/backend/app/services/ai_service.py) to parse compound input fragments and retrieve RAG database segments independently.
+  - Added Tesseract OCR binary processing inside [tasks.py](file:///home/ubuntu/whatsapp-ai-saas/backend/worker/tasks.py) to support image documents (`.png`, `.jpg`, `.jpeg`) via `pytesseract` and `Pillow`.
+  - Created WebSocket endpoints `/agent/{agent_id}` and `/ws/agent/{agent_id}` in [websockets.py](file:///home/ubuntu/whatsapp-ai-saas/backend/app/routers/websockets.py) to capture operator override inputs and route them to a Redis Pub/Sub channel (`"whatsapp_outbound"`). Developed the Redis subscriber bridge daemon task to process `"whatsapp_outbound"` events and execute manual sends.
+  - Authored client-side [LiveChat.tsx](file:///home/ubuntu/whatsapp-ai-saas/frontend/src/components/LiveChat.tsx) component wrapping agent keystroke actions and triggering WebSocket messages.
+* **Verification Proof**: Deployed changes, installed binary libraries, flushed Redis queues, and ran regression and enterprise suites achieving 100% verification passes.

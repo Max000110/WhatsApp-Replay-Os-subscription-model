@@ -129,3 +129,9 @@ def home():
 @app.get("/api/v1/health")
 def health_check():
     return {"status": "healthy"}
+
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    from app.routers.websockets import listen_whatsapp_outbound
+    asyncio.create_task(listen_whatsapp_outbound())

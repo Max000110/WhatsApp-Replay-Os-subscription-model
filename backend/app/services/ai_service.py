@@ -1,17 +1,145 @@
-import httpx
+import re
 import os
 import time
+import httpx
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from app.config import settings
+from app.database import SessionLocal
 from app.models.all_models import AIUsageLog, Chatbot, Conversation
+from app.services.rag_service import rag_service
+
+def search_pgvector_sync(db: Session, session_id: str, query_text: str, limit: int = 3) -> list:
+    """Synchronous implementation of similarity search to avoid async runtime blocks"""
+    import httpx
+    from app.config import settings
+    url = f"{settings.OLLAMA_HOST}/api/embeddings"
+    payload = {
+        "model": "all-minilm:latest",
+        "prompt": query_text
+    }
+    try:
+        res = httpx.post(url, json=payload, timeout=20.0)
+        if res.status_code == 200:
+            query_vector = res.json().get("embedding", [])
+        else:
+            return []
+    except Exception as err:
+        print("[search_pgvector_sync] Error connecting to Ollama embeddings:", err)
+        return []
+        
+    if not query_vector or all(v == 0.0 for v in query_vector):
+        return []
+        
+    sql_kb = text("""
+        SELECT kb.id FROM knowledge_bases kb
+        JOIN chatbots cb ON cb.tenant_id = kb.tenant_id
+        WHERE cb.session_id = :session_id AND cb.rag_enabled = TRUE
+        LIMIT 1
+    """)
+    kb_res = db.execute(sql_kb, {"session_id": session_id}).fetchone()
+    if not kb_res:
+        return []
+        
+    kb_id = kb_res[0]
+    
+    sql_search = text("""
+        SELECT chunk.content, chunk.embedding <=> :vector_str AS distance
+        FROM kb_document_chunks chunk
+        JOIN kb_documents doc ON chunk.document_id = doc.id
+        WHERE doc.kb_id = :kb_id
+        ORDER BY distance ASC
+        LIMIT :limit
+    """)
+    
+    vector_str = "[" + ",".join(map(str, query_vector)) + "]"
+    
+    results = db.execute(sql_search, {
+        "kb_id": kb_id,
+        "vector_str": vector_str,
+        "limit": limit
+    }).fetchall()
+    
+    return [row[0].strip() for row in results]
+
+def extract_multi_intent_context(user_query: str, tenant_id: str) -> str:
+    """
+    Splits user query by common Hindi/English conjunctions to prevent LLM attention collapse.
+    Queries RAG vector database for each fragment independently and merges the context.
+    """
+    fragments = re.split(r'\s+(aur|and|sath hi|,)\s+', user_query, flags=re.IGNORECASE)
+    
+    combined_rag_context = []
+    db = SessionLocal()
+    try:
+        from app.models.all_models import Chatbot
+        bot = db.query(Chatbot).filter(Chatbot.tenant_id == tenant_id, Chatbot.is_active == True).first()
+        if bot and bot.rag_enabled:
+            for fragment in fragments:
+                fragment_clean = fragment.strip()
+                if len(fragment_clean) > 3:
+                    vector_results = search_pgvector_sync(db, bot.session_id, fragment_clean)
+                    if vector_results:
+                        combined_rag_context.extend(vector_results)
+    finally:
+        db.close()
+        
+    return "\n".join(list(set(combined_rag_context)))
+
+def build_hybrid_system_context(static_config: dict, retrieved_rag_chunks: list) -> str:
+    """
+    Immutably merges static brain settings with dynamic RAG catalog layers.
+    Enforces absolute vector priority over structural token placeholders.
+    """
+    company = static_config.get("company_name", "baba guest house")
+    location = static_config.get("business_location", "khatu shyam ji")
+    
+    # Extract raw database context strings safely
+    rag_payload = ""
+    if retrieved_rag_chunks:
+        if isinstance(retrieved_rag_chunks, list):
+            rag_payload = "\n".join([str(chunk.get("text", chunk)) if isinstance(chunk, dict) else str(chunk) for chunk in retrieved_rag_chunks])
+        else:
+            rag_payload = str(retrieved_rag_chunks)
+    
+    return f"""
+    === SYSTEM DIRECTIVE LAYER 1 (DETERMINISTIC) ===
+    Identity: Official automated system portal for {company}, situated at {location}.
+    Linguistic Constraint: Suppress robotic padding phrases such as "How can I assist you?" or "Hello! Welcome to...". Directly output verified target parameters.
+    
+    === SYSTEM DIRECTIVE LAYER 2 (DYNAMIC VECTOR RAG - HIGHEST PRIORITY) ===
+    CRITICAL: The content below is the live user catalog database. If populated, ignore any generic food defaults or placeholders. Extract names, items, and structures exclusively from this vector block:
+    [VERIFIED CATALOG VECTOR CHUNKS]:
+    {rag_payload if rag_payload.strip() else static_config.get("products_catalog", "all types of veg food")}
+    
+    === SYSTEM DIRECTIVE LAYER 3 (MULTI-INTENT CONSTRAINTS) ===
+    If incoming queries contain compounded connector tokens ('aur', 'and', ','), extract every individual parameter intent and answer all fractions concurrently.
+    """
 
 def assemble_layered_prompt(bot: Chatbot, conv: Conversation = None, kb_context: str = "", intent: str = "GENERAL", user_query: str = None) -> str:
     """
     Assembles a premium 15-layered context-grounded system prompt with specialized agent layers.
     """
-    # System prompt addition to avoid token starvation in compound parameters
-    SYSTEM_CORE_DIRECTIVE = """
+    # If user query contains multi-intent connectors and RAG is enabled, extract split context
+    if user_query and bot.rag_enabled and any(conn in user_query.lower() for conn in ["and", "aur", "sath hi", ","]):
+        multi_intent_context = extract_multi_intent_context(user_query, bot.tenant_id)
+        if multi_intent_context:
+            kb_context = "\n\nRelevant Business Context:\n" + "\n".join([f"- {line.strip()}" for line in multi_intent_context.split("\n") if line.strip()])
+
+    # Merge static brain config with RAG vector segments using build_hybrid_system_context
+    static_config = {
+        "company_name": bot.company_name or "baba guest house",
+        "business_location": bot.location or "khatu shyam ji",
+        "products_catalog": bot.products or "all types of veg food",
+        "policies": bot.policies or "No refunds",
+        "services_offered": bot.services or "Food"
+    }
+    hybrid_context_override = build_hybrid_system_context(static_config, [kb_context] if kb_context else [])
+    
+    # SYSTEM_CORE_DIRECTIVE to avoid token starvation in compound parameters
+    SYSTEM_CORE_DIRECTIVE = f"""
   --- LAYER 1: MULTI-INTENT EXTRACTION PRINCIPLE ---
+  {hybrid_context_override}
   You are an advanced, context-aware administrative representative.
   CRITICAL: If the customer asks multiple distinct questions within a single message block (e.g., asking for BOTH the address AND the menu/phone number), you must evaluate and answer EVERY segment explicitly using your business profile variables. Never drop secondary questions.
   Always suppress synthetic AI greetings like "How can I assist you today?" or "Hello! Welcome to...". Directly deliver raw parameter responses sourced strictly from the local configuration settings mapping.

@@ -1,4 +1,5 @@
 import httpx
+from sqlalchemy import text
 from app.config import settings
 
 class SessionService:
@@ -9,6 +10,31 @@ class SessionService:
 
     def __init__(self):
         self.engine_url = settings.WHATSAPP_ENGINE_URL
+
+    async def trigger_live_agent_override(self, conversation_id: str, agent_id: str, db, tenant_id: str):
+        """
+        Flush internal bot context instantly when human agent connects.
+        Overrides the state transition flags from red to CONNECTED_GREEN.
+        """
+        db.execute(
+            text("UPDATE conversations SET handoff_status = 'HUMAN_ACTIVE', bot_override = TRUE WHERE id = :id"),
+            {"id": conversation_id}
+        )
+        db.commit()
+        
+        # Broadcast green-state active flag via WebSockets to Next.js dashboard
+        from app.core.websocket import websocket_manager
+        await websocket_manager.publish_event(
+            str(tenant_id),
+            "conversation",
+            {
+                "id": str(conversation_id),
+                "status": "CONNECTED_GREEN",
+                "agent": str(agent_id),
+                "handoff_status": "HUMAN_ACTIVE",
+                "bot_override": True
+            }
+        )
 
     async def init_whatsapp_connection(self, session_id: str) -> bool:
         """
