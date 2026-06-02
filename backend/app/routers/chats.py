@@ -422,6 +422,7 @@ async def handoff_conversation(conversation_id: UUID, payload: HandoffStatusUpda
         raise HTTPException(status_code=400, detail=f"Invalid handoff status: {payload.status}. Must be one of {valid_statuses}")
 
     conv.handoff_status = payload.status
+    conv.bot_override = True if payload.status in ["HUMAN_ACTIVE", "WAITING_AGENT"] else False
     db.commit()
     db.refresh(conv)
     
@@ -435,6 +436,7 @@ async def handoff_conversation(conversation_id: UUID, payload: HandoffStatusUpda
         "customer_name": conv.customer_name,
         "is_archived": conv.is_archived,
         "handoff_status": conv.handoff_status,
+        "bot_override": conv.bot_override,
         "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None
     }
     try:
@@ -460,6 +462,7 @@ async def release_conversation(conversation_id: UUID, tenant_id: UUID = Depends(
     conv.handoff_status = "RESOLVED"
     # Also reset bot_paused_until so bot is fully reactivated immediately
     conv.bot_paused_until = None
+    conv.bot_override = False
     db.commit()
     db.refresh(conv)
 
@@ -473,6 +476,7 @@ async def release_conversation(conversation_id: UUID, tenant_id: UUID = Depends(
         "customer_name": conv.customer_name,
         "is_archived": conv.is_archived,
         "handoff_status": conv.handoff_status,
+        "bot_override": conv.bot_override,
         "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None
     }
     try:

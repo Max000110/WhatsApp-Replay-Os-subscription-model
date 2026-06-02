@@ -46,10 +46,37 @@ async def upload_kb_document(kb_id: UUID, file: UploadFile = File(...), tenant_i
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found.")
 
-    # 2. Secure file writing
+    # 2. Secure file writing with optimized binary stream validation pipeline
     file_id_path = os.path.join(UPLOAD_DIR, f"{kb_id}_{file.filename}")
-    with open(file_id_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    try:
+        written_bytes = 0
+        # Reset file stream position
+        await file.seek(0)
+        with open(file_id_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(1024 * 1024) # 1MB chunk
+                if not chunk:
+                    break
+                buffer.write(chunk)
+                written_bytes += len(chunk)
+                
+        # Validate binary stream integrity
+        if written_bytes == 0:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+            
+        # Verify file size on block storage matches exactly
+        disk_size = os.path.getsize(file_id_path)
+        if disk_size != written_bytes:
+            raise HTTPException(status_code=500, detail="Binary stream mismatch: disk size does not match written bytes.")
+            
+        print(f"[RAG Upload Pipeline] Cleanly saved and verified {written_bytes} bytes for {file.filename}.")
+    except Exception as stream_err:
+        if os.path.exists(file_id_path):
+            try:
+                os.remove(file_id_path)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Binary stream validation failed: {str(stream_err)}")
 
     # 3. Create Document DB state
     new_doc = KBDocument(

@@ -5,13 +5,46 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models.all_models import AIUsageLog, Chatbot, Conversation
 
-def assemble_layered_prompt(bot: Chatbot, conv: Conversation = None, kb_context: str = "", intent: str = "GENERAL") -> str:
+def assemble_layered_prompt(bot: Chatbot, conv: Conversation = None, kb_context: str = "", intent: str = "GENERAL", user_query: str = None) -> str:
     """
     Assembles a premium 15-layered context-grounded system prompt with specialized agent layers.
     """
+    # System prompt addition to avoid token starvation in compound parameters
+    SYSTEM_CORE_DIRECTIVE = """
+  --- LAYER 1: MULTI-INTENT EXTRACTION PRINCIPLE ---
+  You are an advanced, context-aware administrative representative.
+  CRITICAL: If the customer asks multiple distinct questions within a single message block (e.g., asking for BOTH the address AND the menu/phone number), you must evaluate and answer EVERY segment explicitly using your business profile variables. Never drop secondary questions.
+  Always suppress synthetic AI greetings like "How can I assist you today?" or "Hello! Welcome to...". Directly deliver raw parameter responses sourced strictly from the local configuration settings mapping.
+  """
+
+    # Dynamic logical connectors scan for intent matrix splitting
+    intent_matrix_split = ""
+    if user_query:
+        msg_lower = user_query.lower()
+        # Scan for multiple connectors
+        connectors_found = []
+        if "aur" in msg_lower:
+            connectors_found.append("aur")
+        if "and" in msg_lower:
+            connectors_found.append("and")
+        if "," in msg_lower:
+            connectors_found.append(",")
+            
+        if len(connectors_found) >= 1:
+            intent_matrix_split = (
+                "\n=== MULTI-INTENT LOGICAL PROCESSING TRIGGER ===\n"
+                f"Logical connector(s) {connectors_found} detected in user query.\n"
+                "CRITICAL INSTRUCTION: Segment the input query, identify ALL distinct questions, "
+                "and iterate through and answer each segment explicitly using the local company configurations. "
+                "Do not omit or skip any part of the query!\n"
+                "=================================================\n"
+            )
+
     # LAYER 1: Core Directives & Factual Grounding
     l1_core = (
         "=== LAYER 1: SYSTEM CORE DIRECTIVES ===\n"
+        f"{SYSTEM_CORE_DIRECTIVE}\n"
+        f"{intent_matrix_split}\n"
         "You are an advanced, context-aware administrative AI brain representative helping a customer.\n"
         "You MUST rely ONLY on the verified business profile details, retrieved faq contexts, customer memory,\n"
         "and guardrails provided below. Never hallucinate or assume facts. If information is not explicitly\n"

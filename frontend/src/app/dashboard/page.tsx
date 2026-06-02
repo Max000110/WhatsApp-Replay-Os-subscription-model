@@ -1277,7 +1277,7 @@ export default function DashboardPage() {
                           {/* Dynamic Handoff Status Badge */}
                           <span className={`text-[9px] uppercase tracking-wider font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 border ${
                             activeConv.handoff_status === 'HUMAN_ACTIVE'
-                              ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                               : activeConv.handoff_status === 'WAITING_AGENT'
                                 ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                                 : activeConv.handoff_status === 'RESOLVED'
@@ -1286,7 +1286,7 @@ export default function DashboardPage() {
                           }`}>
                             <span className={`h-1.5 w-1.5 rounded-full ${
                               activeConv.handoff_status === 'HUMAN_ACTIVE'
-                                ? 'bg-red-400 animate-pulse'
+                                ? 'bg-emerald-400 animate-pulse'
                                 : activeConv.handoff_status === 'WAITING_AGENT'
                                   ? 'bg-amber-400 animate-bounce'
                                   : activeConv.handoff_status === 'RESOLVED'
@@ -1642,7 +1642,7 @@ export default function DashboardPage() {
                           disabled={actionLoading}
                           className="bg-primary hover:bg-primary-hover text-white text-xs font-semibold px-4 py-2 rounded-lg transition"
                         >
-                          {actionLoading ? 'Splitting & Vectorizing...' : 'Upload Ingest'}
+                          {actionLoading ? 'Splitting & Vectorizing...' : 'Process Document'}
                         </button>
                       </form>
                     </div>

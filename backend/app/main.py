@@ -51,6 +51,7 @@ try:
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS past_interactions_summary TEXT;"))
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS open_tickets TEXT;"))
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS lead_status VARCHAR(50) DEFAULT 'cold';"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS bot_override BOOLEAN DEFAULT false;"))
         
         # AI Brain Custom Configurations
         conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS personality VARCHAR(100) DEFAULT 'Friendly';"))

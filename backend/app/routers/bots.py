@@ -145,7 +145,7 @@ async def test_prompt_sandbox(
     # 2. Classify intent & Assemble system prompt (Phase 5 & 6)
     from app.services.ai_service import classify_intent
     detected_intent = classify_intent(payload.test_question)
-    constructed_prompt = assemble_layered_prompt(bot, conv, kb_context, intent=detected_intent)
+    constructed_prompt = assemble_layered_prompt(bot, conv, kb_context, intent=detected_intent, user_query=payload.test_question)
 
     # 3. Close database session to release connection to the pool during slow LLM inference!
     db.close()

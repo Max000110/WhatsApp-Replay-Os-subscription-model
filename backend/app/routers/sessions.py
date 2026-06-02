@@ -267,9 +267,9 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
             from datetime import datetime, timezone
             is_paused = False
             bypass_reason = ""
-            if conv.handoff_status in ["WAITING_AGENT", "HUMAN_ACTIVE"]:
+            if conv.handoff_status in ["WAITING_AGENT", "HUMAN_ACTIVE"] or conv.bot_override:
                 is_paused = True
-                bypass_reason = f"handoff_status is {conv.handoff_status}"
+                bypass_reason = f"handoff_status is {conv.handoff_status} (bot_override={getattr(conv, 'bot_override', False)})"
             elif conv.bot_paused_until:
                 now = datetime.now(timezone.utc)
                 if conv.bot_paused_until > now:
@@ -309,7 +309,7 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                 # Prompt Assembly
                 t_prompt_start = time.time()
                 from app.services.ai_service import assemble_layered_prompt
-                injected_prompt = assemble_layered_prompt(bot, conv, kb_context, intent=detected_intent)
+                injected_prompt = assemble_layered_prompt(bot, conv, kb_context, intent=detected_intent, user_query=message_body)
                 t_prompt = int((time.time() - t_prompt_start) * 1000)
 
                 # Capture necessary IDs to prevent using detached SQLAlchemy objects
