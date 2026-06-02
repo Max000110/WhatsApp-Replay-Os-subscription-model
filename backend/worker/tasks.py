@@ -48,26 +48,7 @@ def process_kb_document_task(doc_id: str):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File {file_path} does not exist on disk.")
 
-        def extract_pdf(fp: str) -> str:
-            reader = PdfReader(fp)
-            extracted_pages = []
-            for page in reader.pages:
-                extracted_pages.append(page.extract_text() or "")
-            return "\n".join(extracted_pages)
-
-        def parse_document_to_text(fp: str) -> str:
-            import pytesseract
-            from PIL import Image
-            _, ext = os.path.splitext(fp.lower())
-            if ext in ['.png', '.jpg', '.jpeg']:
-                # Force OCR extraction for image-based menus
-                return pytesseract.image_to_string(Image.open(fp))
-            elif ext == '.pdf':
-                return extract_pdf(fp)
-            else:
-                with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
-                    return f.read()
-
+        from app.services.knowledge import parse_document_to_text
         text_content = parse_document_to_text(file_path)
 
         if not text_content.strip():

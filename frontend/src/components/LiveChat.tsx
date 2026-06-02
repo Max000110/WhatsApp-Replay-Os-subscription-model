@@ -4,12 +4,12 @@ import React, { useEffect, useState, useRef } from 'react';
 
 interface LiveChatProps {
   agentId: string;
-  tenantId: string;
-  customerJid: string;
+  currentTenantId: string;
+  currentConversationJid: string;
 }
 
-export default function LiveChat({ agentId, tenantId, customerJid }: LiveChatProps) {
-  const [messages, setMessages] = useState<Array<{ sender: string; text: string; time: string }>>([]);
+export default function LiveChat({ agentId, currentTenantId, currentConversationJid }: LiveChatProps) {
+  const [messages, setMessages] = useState<Array<{ sender: string; text: string; timestamp: Date }>>([]);
   const [inputText, setInputText] = useState('');
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const wsRef = useRef<WebSocket | null>(null);
@@ -48,24 +48,25 @@ export default function LiveChat({ agentId, tenantId, customerJid }: LiveChatPro
     };
   }, [agentId]);
 
-  const sendOverrideMessage = () => {
-    if (!inputText.trim() || !wsRef.current || status !== 'connected') return;
+  const handleSendMessage = () => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !inputText.trim()) return;
 
-    const payload = {
-      action: 'send_override_message',
+    const messagePayload = {
+      action: "send_override_message",
       payload: {
-        jid: customerJid,
-        text: inputText,
-        tenant_id: tenantId,
-      },
+        jid: currentConversationJid, // e.g., "185654373789739@s.whatsapp.net"
+        text: inputText.trim(),
+        tenant_id: currentTenantId
+      }
     };
 
-    wsRef.current.send(JSON.stringify(payload));
-    setMessages((prev) => [
-      ...prev,
-      { sender: 'Agent (You)', text: inputText, time: new Date().toLocaleTimeString() },
-    ]);
-    setInputText('');
+    // Emit structural JSON packet directly across the socket interface
+    socket.send(JSON.stringify(messagePayload));
+    
+    // Force immediate local UI array push to display the message natively in the window
+    setMessages((prev) => [...prev, { sender: "agent", text: inputText.trim(), timestamp: new Date() }]);
+    setInputText("");
   };
 
   return (
@@ -98,14 +99,14 @@ export default function LiveChat({ agentId, tenantId, customerJid }: LiveChatPro
             <div
               key={index}
               className={`flex flex-col max-w-[80%] rounded-lg p-3 ${
-                msg.sender.includes('You')
+                msg.sender === 'agent'
                   ? 'bg-emerald-600 text-slate-100 ml-auto'
                   : 'bg-slate-700 text-slate-200 mr-auto'
               }`}
             >
               <div className="text-[10px] text-slate-300 font-medium mb-1">{msg.sender}</div>
               <p className="text-sm">{msg.text}</p>
-              <div className="text-[9px] text-slate-300 text-right mt-1">{msg.time}</div>
+              <div className="text-[9px] text-slate-300 text-right mt-1">{msg.timestamp.toLocaleTimeString()}</div>
             </div>
           ))
         )}
@@ -118,10 +119,10 @@ export default function LiveChat({ agentId, tenantId, customerJid }: LiveChatPro
           onChange={(e) => setInputText(e.target.value)}
           placeholder="Type WhatsApp message..."
           className="flex-1 px-4 py-2 bg-slate-850 border border-slate-700 rounded-md text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
-          onKeyDown={(e) => e.key === 'Enter' && sendOverrideMessage()}
+          onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
         />
         <button
-          onClick={sendOverrideMessage}
+          onClick={handleSendMessage}
           disabled={status !== 'connected' || !inputText.trim()}
           className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-sm font-medium rounded-md transition-colors"
         >
