@@ -12,6 +12,10 @@ from sqlalchemy import text
 try:
     Base.metadata.create_all(bind=engine)
     with engine.connect() as conn:
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'active';"))
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS termination_grace_period_ends TIMESTAMP WITH TIME ZONE;"))
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS data_retention_policy VARCHAR(50) DEFAULT 'archive';"))
+        conn.execute(text("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_visible BOOLEAN DEFAULT true;"))
         conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS whatsapp_message_id VARCHAR(100) UNIQUE;"))
         conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS client_uuid UUID;"))
         conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS tenant_id UUID;"))
@@ -28,7 +32,11 @@ try:
         conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_state VARCHAR(50) DEFAULT 'auto';"))
         conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recurring_interval VARCHAR(50) DEFAULT 'none';"))
         
-        # Phase 1: Google OAuth
+        # Phase 1: Google OAuth & Administrative Hardening
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT false;"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(100);"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT false;"))
+        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_codes JSONB;"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255) UNIQUE;"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_email VARCHAR(255);"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS google_avatar VARCHAR(512);"))
@@ -39,7 +47,24 @@ try:
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_agent_id UUID;"))
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_purchase VARCHAR(255);"))
         conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS lead_stage VARCHAR(50) DEFAULT 'cold';"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS customer_preferences TEXT;"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS past_interactions_summary TEXT;"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS open_tickets TEXT;"))
+        conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS lead_status VARCHAR(50) DEFAULT 'cold';"))
         
+        # AI Brain Custom Configurations
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS personality VARCHAR(100) DEFAULT 'Friendly';"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS company_name VARCHAR(255);"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS services TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS products TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS pricing TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS policies TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS location TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS working_hours TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS contact_details TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS custom_instructions TEXT;"))
+        conn.execute(text("ALTER TABLE chatbots ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN DEFAULT false;"))
+
         conn.commit()
     print("[FastAPI] Database structures synchronized successfully.")
 except Exception as e:

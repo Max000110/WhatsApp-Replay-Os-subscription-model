@@ -24,6 +24,17 @@ def reseed():
         """))
         print("Inserted Tenant.")
 
+        # 2b. Insert Administrative Tenant System Operations (d0f62b2d-1111-2222-3333-444455556666)
+        db.execute(text("DELETE FROM users WHERE email = 'admin@replyos.com'"))
+        db.execute(text("DELETE FROM tenant_quotas WHERE tenant_id = 'd0f62b2d-1111-2222-3333-444455556666'"))
+        db.execute(text("DELETE FROM subscriptions WHERE tenant_id = 'd0f62b2d-1111-2222-3333-444455556666'"))
+        db.execute(text("DELETE FROM tenants WHERE id = 'd0f62b2d-1111-2222-3333-444455556666'"))
+        db.execute(text("""
+            INSERT INTO tenants (id, name, subdomain, status, data_retention_policy, is_visible)
+            VALUES ('d0f62b2d-1111-2222-3333-444455556666', 'System Operations', 'admin', 'active', 'archive', true)
+        """))
+        print("Inserted Administrative Tenant.")
+
         # 3. Insert User sana@gmail.com
         db.execute(text("""
             INSERT INTO users (id, tenant_id, email, password_hash, role, is_active, must_change_password)
@@ -38,6 +49,23 @@ def reseed():
             )
         """))
         print("Inserted User sana@gmail.com.")
+
+        # 3b. Insert Administrative User admin@replyos.com
+        db.execute(text("""
+            INSERT INTO users (id, tenant_id, email, password_hash, first_name, last_name, role, is_active, must_change_password)
+            VALUES (
+                'a1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5d',
+                'd0f62b2d-1111-2222-3333-444455556666',
+                'admin@replyos.com',
+                '$2b$12$XoNLu80bJRoe.JnsubL5i.B6HMXrpO11zMmhlo5KR8FyhzRmhc60O',
+                'System',
+                'Admin',
+                'admin',
+                true,
+                false
+            )
+        """))
+        print("Inserted Administrative User admin@replyos.com.")
 
         # 4. Insert Subscription
         db.execute(text("""
