@@ -20,7 +20,9 @@ export class AntiBanQueue {
 
     if (redisUrl) {
       this.redisClient = createClient({ url: redisUrl });
-      this.redisClient.connect().catch((err) => {
+      this.redisClient.connect().then(() => {
+        this.triggerQueueWorker();
+      }).catch((err) => {
         console.error(`[AntiBanQueue - ${sessionId}] Failed to connect to Redis:`, err.message);
       });
     }
@@ -29,11 +31,35 @@ export class AntiBanQueue {
   /**
    * Pushes outbound message safely to Redis queues or dispatches immediately
    */
-  public async queueMessage(to: string, text: string, messageId?: string, options: { simulateTyping?: boolean } = {}) {
+  public async queueMessage(
+    to: string,
+    text: string,
+    messageId?: string,
+    options: {
+      simulateTyping?: boolean;
+      replyDelay?: number;
+      simulateTypingDelay?: number;
+      sendMode?: string;
+    } = {}
+  ) {
     // Robust JID normalization supporting both raw numbers and pre-formatted JIDs
     let cleanJid = to.trim().replace(/\s+/g, "").replace("+", "");
-    if (!cleanJid.endsWith("@s.whatsapp.net") && !cleanJid.includes("@")) {
-      cleanJid = `${cleanJid}@s.whatsapp.net`;
+    if (cleanJid.includes("@")) {
+      const [user, domain] = cleanJid.split("@");
+      cleanJid = `${user.split(":")[0]}@${domain}`;
+    } else {
+      cleanJid = `${cleanJid.split(":")[0]}@s.whatsapp.net`;
+    }
+    if (!/^\d{7,20}@(s\.whatsapp\.net|lid|g\.us)$/.test(cleanJid)) {
+      console.error(`[AntiBanQueue - ${this.sessionId}] Rejected invalid outbound JID: ${cleanJid}`);
+      if (messageId && this.onStatusUpdate) {
+        this.onStatusUpdate("ack", {
+          messageId,
+          status: "failed",
+          error: `Invalid outbound JID: ${cleanJid}`
+        });
+      }
+      return;
     }
 
     const payload: QueueMessage = {
@@ -41,7 +67,12 @@ export class AntiBanQueue {
       to: cleanJid,
       text,
       simulateTyping: options.simulateTyping ?? true,
-      messageId
+      messageId,
+      options: {
+        replyDelay: options.replyDelay,
+        simulateTypingDelay: options.simulateTypingDelay,
+        sendMode: options.sendMode
+      }
     };
 
     if (this.redisClient && this.redisClient.isOpen) {
@@ -80,27 +111,68 @@ export class AntiBanQueue {
     const jid = payload.to;
     const text = payload.text;
     const messageId = payload.messageId;
+    const opts = payload.options || {};
 
     try {
+      // 1. Initial abort check before any delay/simulation starts
+      if (this.redisClient && this.redisClient.isOpen) {
+        const isDeleted = await this.redisClient.exists(`deleted_chat:${this.sessionId}:${jid}`);
+        if (isDeleted) {
+          console.log(`[AntiBanQueue - ${this.sessionId}] Aborting queue dispatch: conversation has been deleted/archived for JID ${jid}`);
+          if (messageId && this.onStatusUpdate) {
+            this.onStatusUpdate("ack", {
+              messageId,
+              status: "failed",
+              error: "Conversation deleted/archived during queue wait."
+            });
+          }
+          return;
+        }
+      }
+
       if (messageId && this.onStatusUpdate) {
         this.onStatusUpdate("ack", { messageId, status: "sending" });
       }
 
-      if (payload.simulateTyping) {
-        // Trigger simulated typing indicator
-        await this.socket.sendPresenceUpdate("composing", jid);
+      // Check send mode (instant vs humanized)
+      const isInstant = opts.sendMode === "instant";
 
-        // Simulated speed latency: ~20ms per character, capped at 3.5s to remain fluid
-        const typingDelay = Math.min(Math.max(text.length * 20, 600), 3500);
-        await new Promise((resolve) => setTimeout(resolve, typingDelay));
+      if (!isInstant) {
+        if (payload.simulateTyping) {
+          // Trigger simulated typing indicator
+          await this.socket.sendPresenceUpdate("composing", jid);
 
-        // Disable indicator
-        await this.socket.sendPresenceUpdate("paused", jid);
+          // Simulated speed latency: configurable or dynamic (~20ms/char, max 3.5s)
+          const typingDelay = opts.simulateTypingDelay ?? Math.min(Math.max(text.length * 20, 600), 3500);
+          await new Promise((resolve) => setTimeout(resolve, typingDelay));
+
+          // Disable indicator
+          await this.socket.sendPresenceUpdate("paused", jid);
+        }
+
+        // Delay / Jitter control: if custom replyDelay is set, use it. Otherwise, safety jitter interval.
+        const safetyInterval = opts.replyDelay !== undefined 
+          ? opts.replyDelay * 1000 
+          : Math.floor(Math.random() * 2000) + 2000; // Reduced default safety jitter from 4-8s to 2-4s to meet targets
+
+        await new Promise((resolve) => setTimeout(resolve, safetyInterval));
       }
 
-      // Dynamic jitter delay to avoid signature automation footprints (4s - 8s)
-      const safetyInterval = Math.floor(Math.random() * 4000) + 4000;
-      await new Promise((resolve) => setTimeout(resolve, safetyInterval));
+      // 2. Final abort check right before transmission to network
+      if (this.redisClient && this.redisClient.isOpen) {
+        const isDeleted = await this.redisClient.exists(`deleted_chat:${this.sessionId}:${jid}`);
+        if (isDeleted) {
+          console.log(`[AntiBanQueue - ${this.sessionId}] Aborting final network transmission: conversation has been deleted/archived for JID ${jid}`);
+          if (messageId && this.onStatusUpdate) {
+            this.onStatusUpdate("ack", {
+              messageId,
+              status: "failed",
+              error: "Conversation deleted/archived during queue wait."
+            });
+          }
+          return;
+        }
+      }
 
       console.log(`[AntiBanQueue - ${this.sessionId}] BEFORE socket.sendMessage:`, {
         tenant_id: this.tenantId,

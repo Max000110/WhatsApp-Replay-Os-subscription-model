@@ -4,7 +4,7 @@ from app.database import get_db
 from app.models.all_models import Tenant, User, Subscription
 from app.schemas.all_schemas import UserRegister, UserLogin, Token
 from app.core.security import verify_password, get_password_hash, create_access_token
-from datetime import timedelta
+from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -85,6 +85,26 @@ def login_user(payload: UserLogin, db: Session = Depends(get_db)):
             detail="Invalid email or password credentials."
         )
 
+    # Check global emergency system lock
+    try:
+        import redis
+        r = redis.Redis.from_url(settings.REDIS_URL)
+        if r.get("emergency_system_lock") == b"true" and user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="System is under emergency lockdown. Please try again later."
+            )
+    except HTTPException as he:
+        raise he
+    except Exception as re_err:
+        print("[Auth Login] Emergency lock check failed:", re_err)
+
+    if user.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Administrators are not permitted to log in via the customer portal."
+        )
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -98,3 +118,4 @@ def login_user(payload: UserLogin, db: Session = Depends(get_db)):
         "role": user.role,
         "tenant_id": user.tenant_id
     }
+

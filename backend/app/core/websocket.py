@@ -83,6 +83,24 @@ class ConnectionManager:
         except Exception as e:
             print(f"[WebSocketManager] Failed to publish event to Redis: {e}")
 
+    async def broadcast_global_event(self, event_type: str, data: dict):
+        """
+        Broadcasts an event globally to all connected tenants.
+        """
+        event = {"type": event_type, "data": data}
+        for tenant_id in list(self.active_connections.keys()):
+            for connection in list(self.active_connections[tenant_id]):
+                try:
+                    await connection.send_json(event)
+                except Exception:
+                    pass
+        for tenant_id in list(self.active_connections.keys()):
+            channel_name = f"tenant_events:{str(tenant_id)}"
+            try:
+                await self.redis_client.publish(channel_name, json.dumps(event))
+            except Exception:
+                pass
+
 websocket_manager = ConnectionManager()
 
 def publish_tenant_event_sync(tenant_id: str, event_type: str, data: dict):

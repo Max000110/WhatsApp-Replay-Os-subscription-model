@@ -4,7 +4,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { 
   QrCode, Bot, MessageSquare, Megaphone, FileText, LogOut, Plus, Trash2, 
-  Send, User, Clock, ShieldCheck, Database, RefreshCw, Smartphone, CheckCircle, AlertCircle, Loader2
+  Send, User, Clock, ShieldCheck, Database, RefreshCw, Smartphone, CheckCircle, AlertCircle, Loader2,
+  Activity
 } from 'lucide-react';
 
 type Tab = 'sessions' | 'bots' | 'chats' | 'campaigns' | 'knowledge' | 'billing';
@@ -39,6 +40,25 @@ export default function DashboardPage() {
   const [newBotPrompt, setNewBotPrompt] = useState('You are an elegant customer assistant. Answer questions politely based on facts.');
   const [newBotSessionId, setNewBotSessionId] = useState('');
   const [newBotRagEnabled, setNewBotRagEnabled] = useState(false);
+  const [newBotPersonality, setNewBotPersonality] = useState('Friendly');
+  const [newBotModel, setNewBotModel] = useState('qwen2.5:1.5b-instruct');
+  const [newBotCompanyName, setNewBotCompanyName] = useState('');
+  const [newBotServices, setNewBotServices] = useState('');
+  const [newBotProducts, setNewBotProducts] = useState('');
+  const [newBotPricing, setNewBotPricing] = useState('');
+  const [newBotPolicies, setNewBotPolicies] = useState('');
+  const [newBotLocation, setNewBotLocation] = useState('');
+  const [newBotWorkingHours, setNewBotWorkingHours] = useState('');
+  const [newBotContactDetails, setNewBotContactDetails] = useState('');
+  const [newBotCustomInstructions, setNewBotCustomInstructions] = useState('');
+  const [newBotMemoryEnabled, setNewBotMemoryEnabled] = useState(false);
+
+  // Edit bot config and sandbox states
+  const [editingBot, setEditingBot] = useState<any | null>(null);
+  const [sandboxQuestion, setSandboxQuestion] = useState('');
+  const [sandboxResponse, setSandboxResponse] = useState<any | null>(null);
+  const [sandboxLoading, setSandboxLoading] = useState(false);
+  const [sandboxTab, setSandboxTab] = useState<'identity' | 'profile' | 'memory' | 'sandbox'>('identity');
   const [agentMsgText, setAgentMsgText] = useState('');
   const [newKbName, setNewKbName] = useState('');
   const [newKbDesc, setNewKbDesc] = useState('');
@@ -47,6 +67,14 @@ export default function DashboardPage() {
   const [campaignText, setCampaignText] = useState('');
   const [campaignSessionId, setCampaignSessionId] = useState('');
   const [campaignRecipients, setCampaignRecipients] = useState('');
+
+  // Support Agent state variables
+  const [agents, setAgents] = useState<any[]>([]);
+  const [showAddAgentModal, setShowAddAgentModal] = useState(false);
+  const [newAgentName, setNewAgentName] = useState('');
+  const [newAgentEmail, setNewAgentEmail] = useState('');
+  const [newAgentDept, setNewAgentDept] = useState('Support');
+  const [newAgentSkills, setNewAgentSkills] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -73,7 +101,22 @@ export default function DashboardPage() {
   }, [messages]);
 
   useEffect(() => {
-    // Basic session validation
+    // Parse query parameters for Google OAuth callback redirects
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const queryToken = urlParams.get('token');
+      const queryTenantId = urlParams.get('tenant_id');
+      const queryRole = urlParams.get('role');
+      
+      if (queryToken) {
+        localStorage.setItem('saas_token', queryToken);
+        if (queryTenantId) localStorage.setItem('saas_tenant_id', queryTenantId);
+        if (queryRole) localStorage.setItem('saas_role', queryRole);
+        // Strip query params from browser URL bar
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+
     const token = localStorage.getItem('saas_token');
     if (!token) {
       window.location.href = '/login';
@@ -253,6 +296,13 @@ export default function DashboardPage() {
       const convList = await api.chats.list();
       setConversations(convList);
 
+      try {
+        const agentList = await api.agents.list();
+        setAgents(agentList);
+      } catch (agentErr) {
+        console.error('Failed fetching support agents:', agentErr);
+      }
+
       // CRITICAL FIX: Keep activeConv in sync with fresh server data.
       if (activeConvRef.current) {
         const freshConv = convList.find((c: any) => c.id === activeConvRef.current.id);
@@ -384,11 +434,33 @@ export default function DashboardPage() {
         name: newBotName,
         system_prompt: newBotPrompt,
         session_id: newBotSessionId || undefined,
-        rag_enabled: newBotRagEnabled
+        rag_enabled: newBotRagEnabled,
+        personality: newBotPersonality,
+        model_name: newBotModel,
+        company_name: newBotCompanyName || undefined,
+        services: newBotServices || undefined,
+        products: newBotProducts || undefined,
+        pricing: newBotPricing || undefined,
+        policies: newBotPolicies || undefined,
+        location: newBotLocation || undefined,
+        working_hours: newBotWorkingHours || undefined,
+        contact_details: newBotContactDetails || undefined,
+        custom_instructions: newBotCustomInstructions || undefined,
+        memory_enabled: newBotMemoryEnabled
       });
       setBots([...bots, res]);
       setNewBotName('');
       setNewBotPrompt('You are an elegant customer assistant. Answer questions politely based on facts.');
+      setNewBotCompanyName('');
+      setNewBotServices('');
+      setNewBotProducts('');
+      setNewBotPricing('');
+      setNewBotPolicies('');
+      setNewBotLocation('');
+      setNewBotWorkingHours('');
+      setNewBotContactDetails('');
+      setNewBotCustomInstructions('');
+      setNewBotMemoryEnabled(false);
     } catch (err: any) {
       alert(err.message);
     } finally {
@@ -402,6 +474,104 @@ export default function DashboardPage() {
       setBots(bots.map(b => b.id === id ? res : b));
     } catch (err: any) {
       alert(err.message);
+    }
+  };
+
+  const handleCreateAgentSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAgentName.trim() || !newAgentEmail.trim()) return;
+    setActionLoading(true);
+    try {
+      const res = await api.agents.create({
+        name: newAgentName,
+        email: newAgentEmail,
+        department: newAgentDept,
+        skills: newAgentSkills || undefined,
+        status: 'online'
+      });
+      setAgents([...agents, res]);
+      setShowAddAgentModal(false);
+      setNewAgentName('');
+      setNewAgentEmail('');
+      setNewAgentSkills('');
+    } catch (err: any) {
+      alert(err.message || 'Failed to register agent.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleTakeOverHandoff = async () => {
+    if (!activeConv) return;
+    setActionLoading(true);
+    try {
+      const res = await api.chats.handoff(activeConv.id, { status: 'HUMAN_ACTIVE' });
+      setActiveConv(res);
+      setConversations(conversations.map(c => c.id === activeConv.id ? res : c));
+    } catch (err: any) {
+      alert(err.message || 'Handoff takeover failed.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReleaseHandoff = async () => {
+    if (!activeConv) return;
+    setActionLoading(true);
+    try {
+      const res = await api.chats.release(activeConv.id);
+      setActiveConv(res);
+      setConversations(conversations.map(c => c.id === activeConv.id ? res : c));
+    } catch (err: any) {
+      alert(err.message || 'Handoff release failed.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleAssignAgentSubmit = async (agentId: string) => {
+    if (!activeConv) return;
+    setActionLoading(true);
+    try {
+      const res = await api.agents.assign({ conversation_id: activeConv.id, agent_id: agentId });
+      setActiveConv(res);
+      setConversations(conversations.map(c => c.id === activeConv.id ? res : c));
+    } catch (err: any) {
+      alert(err.message || 'Agent assignment failed.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleTransferAgentSubmit = async (targetDept: string, targetAgentId?: string) => {
+    if (!activeConv) return;
+    setActionLoading(true);
+    try {
+      const res = await api.agents.transfer({
+        conversation_id: activeConv.id,
+        target_agent_id: targetAgentId || undefined,
+        target_department: targetDept
+      });
+      setActiveConv(res);
+      setConversations(conversations.map(c => c.id === activeConv.id ? res : c));
+    } catch (err: any) {
+      alert(err.message || 'Transfer failed.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCloseConversationSubmit = async () => {
+    if (!activeConv) return;
+    setActionLoading(true);
+    try {
+      const res = await api.agents.close({ conversation_id: activeConv.id });
+      setActiveConv(res);
+      setConversations(conversations.map(c => c.id === activeConv.id ? res : c));
+    } catch (err: any) {
+      alert(err.message || 'Failed to close conversation.');
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -978,10 +1148,10 @@ export default function DashboardPage() {
                             </div>
                           </div>
 
-                          <div className="flex items-center justify-between border-t border-white/5 pt-3 mt-2">
+                          <div className="flex items-center gap-2 border-t border-white/5 pt-3 mt-2">
                             <button
                               onClick={() => handleUpdateBotStatus(b.id, !b.is_active)}
-                              className={`text-xs px-3 py-1.5 rounded-lg font-semibold transition ${
+                              className={`text-[11px] px-2.5 py-1 rounded-lg font-semibold transition ${
                                 b.is_active 
                                   ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' 
                                   : 'bg-primary hover:bg-primary-hover text-white'
@@ -990,13 +1160,24 @@ export default function DashboardPage() {
                               {b.is_active ? 'Deactivate' : 'Activate'}
                             </button>
                             <button
+                              onClick={() => {
+                                setEditingBot(b);
+                                setSandboxTab('identity');
+                                setSandboxQuestion('');
+                                setSandboxResponse(null);
+                              }}
+                              className="text-[11px] bg-slate-800/80 hover:bg-slate-800 border border-white/5 px-2.5 py-1 rounded-lg text-slate-300 font-semibold transition"
+                            >
+                              Configure Brain
+                            </button>
+                            <button
                               onClick={async () => {
                                 if (confirm('Delete bot?')) {
                                   await api.bots.delete(b.id);
                                   setBots(bots.filter(x => x.id !== b.id));
                                 }
                               }}
-                              className="text-xs text-red-400 hover:underline"
+                              className="text-[11px] text-red-400 hover:underline ml-auto font-semibold"
                             >
                               Delete
                             </button>
@@ -1017,33 +1198,68 @@ export default function DashboardPage() {
           {activeTab === 'chats' && (
             <div className="grid grid-cols-3 gap-8 h-[calc(100vh-12rem)] items-stretch">
               
-              {/* Left Column: Conversations Sidebar */}
-              <div className="bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
-                <h3 className="text-sm font-semibold text-slate-200 p-4 border-b border-white/5 shrink-0">Conversations</h3>
-                <div className="flex-1 overflow-y-auto p-3 space-y-2">
-                  {conversations.length === 0 ? (
-                    <div className="text-center py-10">
-                      <MessageSquare className="h-6 w-6 text-slate-700 mx-auto mb-2" />
-                      <p className="text-[11px] text-slate-500">No message channels found.</p>
-                    </div>
-                  ) : (
-                    conversations.map((c: any) => (
-                      <button
-                        key={c.id}
-                        onClick={() => setActiveConv(c)}
-                        className={`w-full text-left p-3 rounded-lg border transition ${
-                          activeConv?.id === c.id 
-                            ? 'bg-primary/10 border-primary/30 text-white' 
-                            : 'bg-slate-950/20 border-white/5 text-slate-400 hover:bg-white/5 hover:text-white'
-                        }`}
-                      >
-                        <p className="font-bold text-xs text-slate-200">{c.customer_name || 'Guest User'}</p>
-                        <p className="text-[10px] text-slate-500 font-semibold tracking-wide mt-0.5">Phone: +{c.customer_phone}</p>
-                        <p className="text-[9px] text-slate-600 mt-2 flex items-center gap-1.5"><Clock className="h-2.5 w-2.5" /> {new Date(c.last_message_at).toLocaleTimeString()}</p>
-                      </button>
-                    ))
-                  )}
+              {/* Left Column: Conversations & Support Agents Sidebar */}
+              <div className="flex flex-col gap-6 h-[calc(100vh-12rem)] overflow-hidden">
+                
+                {/* Conversations Section */}
+                <div className="flex-[3] bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
+                  <h3 className="text-sm font-semibold text-slate-200 p-4 border-b border-white/5 shrink-0">Conversations</h3>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {conversations.length === 0 ? (
+                      <div className="text-center py-10">
+                        <MessageSquare className="h-6 w-6 text-slate-700 mx-auto mb-2" />
+                        <p className="text-[11px] text-slate-500">No message channels found.</p>
+                      </div>
+                    ) : (
+                      conversations.map((c: any) => (
+                        <button
+                          key={c.id}
+                          onClick={() => setActiveConv(c)}
+                          className={`w-full text-left p-3 rounded-lg border transition ${
+                            activeConv?.id === c.id 
+                              ? 'bg-primary/10 border-primary/30 text-white' 
+                              : 'bg-slate-950/20 border-white/5 text-slate-400 hover:bg-white/5 hover:text-white'
+                          }`}
+                        >
+                          <p className="font-bold text-xs text-slate-200">{c.customer_name || 'Guest User'}</p>
+                          <p className="text-[10px] text-slate-500 font-semibold tracking-wide mt-0.5">Phone: +{c.customer_phone}</p>
+                          <p className="text-[9px] text-slate-600 mt-2 flex items-center gap-1.5"><Clock className="h-2.5 w-2.5" /> {new Date(c.last_message_at).toLocaleTimeString()}</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </div>
+
+                {/* Support Agents Section */}
+                <div className="flex-[2] bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
+                  <div className="p-4 border-b border-white/5 shrink-0 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-slate-200">Support Agents</h3>
+                    <button
+                      onClick={() => setShowAddAgentModal(true)}
+                      className="text-[10px] bg-primary hover:bg-primary-hover text-white px-2 py-1 rounded font-semibold transition"
+                    >
+                      + Add Agent
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                    {agents.length === 0 ? (
+                      <div className="text-center py-6 text-slate-600 text-xs">
+                        No support agents registered.
+                      </div>
+                    ) : (
+                      agents.map((a: any) => (
+                        <div key={a.id} className="p-2.5 bg-slate-950/30 border border-white/5 rounded-lg flex items-center justify-between text-xs">
+                          <div>
+                            <p className="font-semibold text-slate-200">{a.name}</p>
+                            <p className="text-[10px] text-slate-500">{a.department} • {a.email}</p>
+                          </div>
+                          <span className={`h-2 w-2 rounded-full ${a.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-700'}`}></span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
               </div>
 
               {/* Right Columns: Thread & override input */}
@@ -1051,14 +1267,100 @@ export default function DashboardPage() {
                 {activeConv ? (
                   <>
                     {/* Thread Header */}
-                    <div className="p-4 border-b border-white/5 shrink-0 flex items-center justify-between bg-slate-950/20">
-                      <div>
-                        <h4 className="font-bold text-sm text-slate-200">{activeConv.customer_name || 'Guest User'}</h4>
-                        <p className="text-[10px] text-slate-500 font-medium">JID: {activeConv.customer_phone}</p>
+                    <div className="p-4 border-b border-white/5 shrink-0 flex flex-col gap-4 bg-slate-950/20">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-bold text-sm text-slate-200">{activeConv.customer_name || 'Guest User'}</h4>
+                          <p className="text-[10px] text-slate-500 font-medium">JID: {activeConv.customer_phone}</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {/* Dynamic Handoff Status Badge */}
+                          <span className={`text-[9px] uppercase tracking-wider font-bold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 border ${
+                            activeConv.handoff_status === 'HUMAN_ACTIVE'
+                              ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                              : activeConv.handoff_status === 'WAITING_AGENT'
+                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                : activeConv.handoff_status === 'RESOLVED'
+                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                  : 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
+                          }`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${
+                              activeConv.handoff_status === 'HUMAN_ACTIVE'
+                                ? 'bg-red-400 animate-pulse'
+                                : activeConv.handoff_status === 'WAITING_AGENT'
+                                  ? 'bg-amber-400 animate-bounce'
+                                  : activeConv.handoff_status === 'RESOLVED'
+                                    ? 'bg-emerald-400'
+                                    : 'bg-indigo-400'
+                            }`}></span>
+                            <span>{activeConv.handoff_status || 'AI_ACTIVE'}</span>
+                          </span>
+
+                          {/* Close/Resolve Button */}
+                          {activeConv.handoff_status !== 'RESOLVED' && (
+                            <button
+                              onClick={handleCloseConversationSubmit}
+                              className="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-2.5 py-1 rounded transition"
+                            >
+                              Resolve
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <span className="text-[9px] uppercase tracking-wider font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1.5">
-                        <Clock className="h-3 w-3 animate-spin" /> Live Override Active
-                      </span>
+
+                      {/* Handoff State Triggers & Agent Management */}
+                      <div className="flex items-center gap-4 flex-wrap border-t border-white/5 pt-3">
+                        {activeConv.handoff_status === 'HUMAN_ACTIVE' ? (
+                          <button
+                            onClick={handleReleaseHandoff}
+                            className="text-xs bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white font-medium px-3.5 py-1.5 rounded-lg border border-white/5 transition"
+                          >
+                            Release back to AI
+                          </button>
+                        ) : (
+                          <button
+                            onClick={handleTakeOverHandoff}
+                            className="text-xs bg-primary hover:bg-primary-hover text-white font-medium px-3.5 py-1.5 rounded-lg transition shadow-md shadow-primary/20"
+                          >
+                            Take Over Handoff
+                          </button>
+                        )}
+
+                        {/* Assign Agent Dropdown */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Assign Agent:</span>
+                          <select
+                            value={activeConv.assigned_agent_id || ''}
+                            onChange={(e) => {
+                              if (e.target.value) handleAssignAgentSubmit(e.target.value);
+                            }}
+                            className="bg-slate-950 border border-white/5 rounded-lg text-xs py-1.5 px-3 focus:outline-none text-slate-300"
+                          >
+                            <option value="">-- Select Agent --</option>
+                            {agents.map((a: any) => (
+                              <option key={a.id} value={a.id}>{a.name} ({a.department})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Transfer Department Dropdown */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Transfer Dept:</span>
+                          <select
+                            value={activeConv.lead_stage || ''}
+                            onChange={(e) => {
+                              if (e.target.value) handleTransferAgentSubmit(e.target.value);
+                            }}
+                            className="bg-slate-950 border border-white/5 rounded-lg text-xs py-1.5 px-3 focus:outline-none text-slate-300"
+                          >
+                            <option value="">-- Select Dept --</option>
+                            <option value="Support">Support</option>
+                            <option value="Sales">Sales</option>
+                            <option value="Billing">Billing</option>
+                            <option value="Technical">Technical</option>
+                          </select>
+                        </div>
+                      </div>
                     </div>
 
                     {/* Scrollable bubble container */}
@@ -1596,6 +1898,448 @@ export default function DashboardPage() {
                 Cancel Sandbox Checkout
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tenant AI Brain Customization Modal */}
+      {editingBot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-white/10 p-6 rounded-2xl w-full max-w-4xl shadow-2xl space-y-6 my-8">
+            <div className="flex justify-between items-center pb-4 border-b border-white/5">
+              <div>
+                <h3 className="text-base font-bold text-slate-200 flex items-center gap-2">
+                  <Bot className="h-5 w-5 text-primary animate-pulse" />
+                  Configure AI Brain: {editingBot.name}
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">Customize multi-tenant isolation, personality builder, custom policies, and run sandbox prompt testing.</p>
+              </div>
+              <button 
+                onClick={() => setEditingBot(null)} 
+                className="text-slate-400 hover:text-white bg-slate-800/50 hover:bg-slate-800 rounded-full h-8 w-8 flex items-center justify-center transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Tabs selection */}
+            <div className="flex gap-2 p-1 bg-slate-950/50 border border-white/5 rounded-xl">
+              {[
+                { id: 'identity', label: 'Identity & Style' },
+                { id: 'profile', label: 'Business Profile' },
+                { id: 'memory', label: 'Memory & RAG' },
+                { id: 'sandbox', label: 'Testing Sandbox' }
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setSandboxTab(t.id as any)}
+                  className={`flex-1 py-2 px-3 text-xs font-semibold rounded-lg transition ${
+                    sandboxTab === t.id 
+                      ? 'bg-primary text-white shadow-lg' 
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* TAB CONTENT */}
+            <div className="space-y-4 min-h-[350px] max-h-[50vh] overflow-y-auto pr-1">
+              
+              {/* TAB 1: IDENTITY & STYLE */}
+              {sandboxTab === 'identity' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Personality Builder Style</label>
+                      <select
+                        value={editingBot.personality || 'Friendly'}
+                        onChange={(e) => setEditingBot({ ...editingBot, personality: e.target.value })}
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-200"
+                      >
+                        <option value="Professional">👔 Professional (Polite, structured, authoritative)</option>
+                        <option value="Friendly">😊 Friendly (Warm, helpful, empathetic)</option>
+                        <option value="Sales Agent">🚀 Sales Agent (Enthusiastic, benefit-focused, persuasive)</option>
+                        <option value="Technical Support">🛠️ Technical Support (Analytical, step-by-step troubleshooter)</option>
+                        <option value="Medical Assistant">🩺 Medical Assistant (Empathetic, clear, boundary-aware)</option>
+                        <option value="Legal Assistant">⚖️ Legal Assistant (Objective, highly precise, literal)</option>
+                        <option value="Custom">⚙️ Custom Tone Strategy (Uses custom prompt rules)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Active LLM Model Selection</label>
+                      <select
+                        value={editingBot.model_name || 'qwen2.5:1.5b-instruct'}
+                        onChange={(e) => setEditingBot({ ...editingBot, model_name: e.target.value })}
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-200"
+                      >
+                        <option value="qwen2.5:1.5b-instruct">qwen2.5 (1.5B Instruct) — Fast & Reliable</option>
+                        <option value="llama3:latest">llama3 (8B) — Creative & Detailed</option>
+                        <option value="deepseek-coder:latest">deepseek (7B Coder) — Analytical & Precise</option>
+                        <option value="mistral:latest">mistral (7B) — Conversational</option>
+                        <option value="gemma2:latest">gemma2 (9B) — Structured Reasoning</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Custom System Instructions / Core Prompt</label>
+                    <textarea
+                      value={editingBot.system_prompt}
+                      onChange={(e) => setEditingBot({ ...editingBot, system_prompt: e.target.value })}
+                      rows={4}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed font-mono"
+                      placeholder="You are an assistant for XYZ company specializing in..."
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs text-slate-400 font-semibold mb-1">Custom Instructions (Layer 5 Override)</label>
+                    <textarea
+                      value={editingBot.custom_instructions || ''}
+                      onChange={(e) => setEditingBot({ ...editingBot, custom_instructions: e.target.value })}
+                      rows={3}
+                      className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      placeholder="e.g. Always reply in Spanish. Never discuss competitors. Keep responses under 2 sentences."
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: BUSINESS PROFILE */}
+              {sandboxTab === 'profile' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Company/Brand Name</label>
+                      <input
+                        type="text"
+                        value={editingBot.company_name || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, company_name: e.target.value })}
+                        placeholder="e.g. Quantum AI Tech"
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Business Hours / Availability</label>
+                      <input
+                        type="text"
+                        value={editingBot.working_hours || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, working_hours: e.target.value })}
+                        placeholder="e.g. Mon-Fri 9:00 AM - 6:00 PM PST"
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Services Offered</label>
+                      <textarea
+                        value={editingBot.services || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, services: e.target.value })}
+                        rows={3}
+                        placeholder="e.g. AI Consulting, WhatsApp integrations..."
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Products & Catalog</label>
+                      <textarea
+                        value={editingBot.products || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, products: e.target.value })}
+                        rows={3}
+                        placeholder="e.g. ReplyOS Conversational Suite..."
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Pricing Structure</label>
+                      <textarea
+                        value={editingBot.pricing || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, pricing: e.target.value })}
+                        rows={3}
+                        placeholder="e.g. Starter: $29/mo, Pro: $79/mo..."
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Business Location / Address</label>
+                      <textarea
+                        value={editingBot.location || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, location: e.target.value })}
+                        rows={3}
+                        placeholder="e.g. 123 Silicon Valley Road, CA"
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Policies (Refunds, SLAs)</label>
+                      <textarea
+                        value={editingBot.policies || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, policies: e.target.value })}
+                        rows={2}
+                        placeholder="e.g. No refunds, 99.9% SLA uptime."
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 font-semibold mb-1">Contact Details</label>
+                      <textarea
+                        value={editingBot.contact_details || ''}
+                        onChange={(e) => setEditingBot({ ...editingBot, contact_details: e.target.value })}
+                        rows={2}
+                        placeholder="e.g. email: info@acme.com, phone: +1234567"
+                        className="w-full bg-slate-950/50 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-300 leading-relaxed"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: MEMORY & RAG */}
+              {sandboxTab === 'memory' && (
+                <div className="space-y-6">
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex gap-4 items-start">
+                    <div className="pt-0.5">
+                      <input
+                        type="checkbox"
+                        id="memory_enabled_checkbox"
+                        checked={editingBot.memory_enabled || false}
+                        onChange={(e) => setEditingBot({ ...editingBot, memory_enabled: e.target.checked })}
+                        className="rounded border-white/5 bg-slate-900 text-primary focus:ring-primary/20 h-4 w-4"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="memory_enabled_checkbox" className="block text-sm font-semibold text-slate-200 mb-1 cursor-pointer">
+                        Enable Customer Memory Layer (Layer 6)
+                      </label>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Allows the chatbot to track customer preferences, past interactions summary, open support tickets, and lead statuses (cold/warm/hot). It will automatically inject this personalized memory context to generate context-aware replies.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/40 p-4 rounded-xl border border-white/5 flex gap-4 items-start">
+                    <div className="pt-0.5">
+                      <input
+                        type="checkbox"
+                        id="rag_enabled_checkbox"
+                        checked={editingBot.rag_enabled || false}
+                        onChange={(e) => setEditingBot({ ...editingBot, rag_enabled: e.target.checked })}
+                        className="rounded border-white/5 bg-slate-900 text-primary focus:ring-primary/20 h-4 w-4"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="rag_enabled_checkbox" className="block text-sm font-semibold text-slate-200 mb-1 cursor-pointer">
+                        Enable RAG Document Ingestion (Layer 4)
+                      </label>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Enables the Vector Similarity Search pipeline using PostgreSQL pgvector. Chatbots will dynamically retrieve relevant paragraphs from your uploaded PDF/TXT/Markdown knowledge documents and inject them before submitting generation requests to the LLM.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: TESTING SANDBOX */}
+              {sandboxTab === 'sandbox' && (
+                <div className="space-y-4">
+                  <div className="bg-blue-500/10 border border-blue-500/20 p-4 rounded-xl flex gap-3 text-blue-300 leading-relaxed">
+                    <Activity className="h-5 w-5 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider mb-1">Prompt Testing Console</p>
+                      <p className="text-[11px] text-slate-300">
+                        Test your AI brain configuration in a secure sandbox. Submit queries to preview the final assembled prompt hierarchy (System, Identity, Business profile, RAG facts, Memory context), retrieved document chunks, and the resulting LLM completion in real-time.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <input
+                      type="text"
+                      value={sandboxQuestion}
+                      onChange={(e) => setSandboxQuestion(e.target.value)}
+                      placeholder="Ask a test question (e.g. What services do you provide? What are your hours?)"
+                      className="flex-1 bg-slate-950 border border-white/10 rounded-xl py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-slate-200"
+                    />
+                    <button
+                      onClick={async () => {
+                        if (!sandboxQuestion.trim()) return;
+                        setSandboxLoading(true);
+                        setSandboxResponse(null);
+                        try {
+                          const res = await api.bots.testPrompt(editingBot.id, { test_question: sandboxQuestion });
+                          setSandboxResponse(res);
+                        } catch (err: any) {
+                          alert(err.message || 'Testing request failed.');
+                        } finally {
+                          setSandboxLoading(false);
+                        }
+                      }}
+                      disabled={sandboxLoading || !sandboxQuestion.trim()}
+                      className="bg-primary hover:bg-primary-hover text-white text-xs px-5 rounded-xl font-semibold flex items-center gap-1.5 transition disabled:opacity-50"
+                    >
+                      {sandboxLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+                      Run Sandbox Query
+                    </button>
+                  </div>
+
+                  {sandboxResponse && (
+                    <div className="grid grid-cols-2 gap-4 pt-2">
+                      <div className="space-y-2">
+                        <label className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Assembled Dynamic System Prompt</label>
+                        <div className="bg-slate-950 p-4 rounded-xl border border-white/5 text-[11px] font-mono text-slate-300 h-64 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                          {sandboxResponse.constructed_prompt}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block text-[10px] text-slate-400 font-bold uppercase tracking-wider">Generated LLM Response & Context</label>
+                        <div className="bg-slate-950 p-4 rounded-xl border border-white/5 text-[11px] h-64 overflow-y-auto flex flex-col justify-between">
+                          <div className="text-slate-200 whitespace-pre-wrap leading-relaxed mb-4">
+                            {sandboxResponse.llm_response}
+                          </div>
+                          {sandboxResponse.retrieved_context && (
+                            <div className="mt-auto border-t border-white/5 pt-3">
+                              <span className="block text-[9px] text-slate-500 font-bold uppercase tracking-wider mb-1">RAG Context:</span>
+                              <span className="text-[10px] text-slate-400 block line-clamp-3 leading-normal font-sans">{sandboxResponse.retrieved_context}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            </div>
+
+            {/* MODAL FOOTER */}
+            <div className="flex justify-end gap-3 pt-4 border-t border-white/5">
+              <button
+                onClick={() => setEditingBot(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 text-slate-400 hover:text-white transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setActionLoading(true);
+                  try {
+                    const res = await api.bots.patch(editingBot.id, {
+                      name: editingBot.name,
+                      system_prompt: editingBot.system_prompt,
+                      model_name: editingBot.model_name,
+                      rag_enabled: editingBot.rag_enabled,
+                      personality: editingBot.personality,
+                      company_name: editingBot.company_name || null,
+                      services: editingBot.services || null,
+                      products: editingBot.products || null,
+                      pricing: editingBot.pricing || null,
+                      policies: editingBot.policies || null,
+                      location: editingBot.location || null,
+                      working_hours: editingBot.working_hours || null,
+                      contact_details: editingBot.contact_details || null,
+                      custom_instructions: editingBot.custom_instructions || null,
+                      memory_enabled: editingBot.memory_enabled
+                    });
+                    setBots(bots.map(x => x.id === editingBot.id ? res : x));
+                    setEditingBot(null);
+                  } catch (err: any) {
+                    alert(err.message || 'Saving configuration failed.');
+                  } finally {
+                    setActionLoading(false);
+                  }
+                }}
+                disabled={actionLoading}
+                className="px-5 py-2 rounded-xl text-xs font-semibold bg-primary hover:bg-primary-hover text-white transition flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {actionLoading && <Loader2 className="h-3 w-3 animate-spin" />}
+                Save Brain Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 4. ADD SUPPORT AGENT MODAL OVERLAY */}
+      {showAddAgentModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-white/5 rounded-2xl shadow-2xl p-6 relative">
+            <h3 className="text-base font-bold text-white mb-4">Register New Support Agent</h3>
+            <form onSubmit={handleCreateAgentSubmit} className="space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Agent Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newAgentName}
+                  onChange={(e) => setNewAgentName(e.target.value)}
+                  placeholder="Jane Support"
+                  className="w-full bg-slate-950 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Agent Email</label>
+                <input
+                  type="email"
+                  required
+                  value={newAgentEmail}
+                  onChange={(e) => setNewAgentEmail(e.target.value)}
+                  placeholder="jane@company.com"
+                  className="w-full bg-slate-950 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Department</label>
+                <select
+                  value={newAgentDept}
+                  onChange={(e) => setNewAgentDept(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-white"
+                >
+                  <option value="Support">Support</option>
+                  <option value="Sales">Sales</option>
+                  <option value="Billing">Billing</option>
+                  <option value="Technical">Technical</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Skills / Notes</label>
+                <input
+                  type="text"
+                  value={newAgentSkills}
+                  onChange={(e) => setNewAgentSkills(e.target.value)}
+                  placeholder="Customer service, troubleshooting, pgvector RAG"
+                  className="w-full bg-slate-950 border border-white/5 rounded-lg py-2 px-3 text-xs focus:outline-none focus:border-primary/50 text-white"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setShowAddAgentModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 text-slate-400 hover:text-white transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading}
+                  className="px-5 py-2 rounded-xl text-xs font-semibold bg-primary hover:bg-primary-hover text-white transition disabled:opacity-50"
+                >
+                  Register Agent
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

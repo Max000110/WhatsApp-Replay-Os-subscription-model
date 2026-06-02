@@ -102,13 +102,13 @@ def delete_session(session_id: UUID, tenant_id: UUID = Depends(get_current_tenan
 #   3. Campaigns → worker/tasks.py → session_service
 # All paths converge on session_service.send_whatsapp_message() → WhatsApp engine
 # ─────────────────────────────────────────────────────────────────────────────
-async def unified_dispatch(session_id: str, to_phone: str, text: str, message_id: str = None) -> bool:
+async def unified_dispatch(session_id: str, to_phone: str, text: str, message_id: str = None, options: dict = None) -> bool:
     """
     Unified outbound message dispatcher.
     Routes to WhatsApp Engine anti-ban queue via session_service.
     Identical to the campaign worker and Live Override dispatch path.
     """
-    return await session_service.send_whatsapp_message(session_id, to_phone, text, message_id)
+    return await session_service.send_whatsapp_message(session_id, to_phone, text, message_id, options)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +128,8 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
     Background task with own DB session lifecycle.
     Inbound message → AI pipeline → unified_dispatch → WhatsApp delivery.
     """
+    import time
+    t_start = time.time()
     db = SessionLocal()
     try:
         ws_session = db.query(WhatsAppSession).filter(WhatsAppSession.id == session_id).first()
@@ -138,7 +140,20 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
         tenant_id = ws_session.tenant_id
 
         if event == "message":
-            customer_phone = data_dict.get("from", "")
+            from app.core.jid import normalize_jid
+            from app.models.all_models import TenantSetting
+            t_settings = db.query(TenantSetting).filter(TenantSetting.tenant_id == tenant_id).first()
+            country_code = t_settings.default_country_code if t_settings and t_settings.default_country_code else "91"
+            raw_from = data_dict.get("rawRemoteJid") or data_dict.get("from", "")
+            try:
+                customer_phone = normalize_jid(raw_from, default_country_code=country_code)
+            except ValueError as err:
+                print(
+                    f"[Webhook - {session_id}] Rejected inbound message with invalid JID source "
+                    f"from='{raw_from}' rawRemoteJid='{data_dict.get('rawRemoteJid', '')}' "
+                    f"rawParticipant='{data_dict.get('rawParticipant', '')}': {err}"
+                )
+                return
             message_body = data_dict.get("body", "")
             customer_name = data_dict.get("pushName", "")
 
@@ -151,28 +166,56 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
 
             # 1. Fetch or create conversation record for this customer
             conv = db.query(Conversation).filter(
-                Conversation.session_id == ws_session.id,
+                Conversation.tenant_id == tenant_id,
                 Conversation.customer_phone == customer_phone
             ).first()
 
             if not conv:
-                conv = Conversation(
-                    tenant_id=tenant_id,
-                    session_id=ws_session.id,
-                    customer_phone=customer_phone,
-                    customer_name=customer_name
-                )
-                db.add(conv)
-                db.commit()
-                db.refresh(conv)
+                try:
+                    conv = Conversation(
+                        tenant_id=tenant_id,
+                        session_id=ws_session.id,
+                        customer_phone=customer_phone,
+                        customer_name=customer_name
+                    )
+                    db.add(conv)
+                    db.commit()
+                    db.refresh(conv)
+                except Exception:
+                    db.rollback()
+                    conv = db.query(Conversation).filter(
+                        Conversation.tenant_id == tenant_id,
+                        Conversation.customer_phone == customer_phone
+                    ).first()
 
-            # 2. Persist the inbound customer message
+            # 2. Persist the inbound customer message with duplicate check
+            import uuid
+            msg_uuid = None
+            wmsg_id = data_dict.get("messageId")
+            if wmsg_id:
+                try:
+                    msg_uuid = uuid.UUID(wmsg_id)
+                except ValueError:
+                    pass
+                
+                # Deduplication check to prevent duplicate key constraint violations
+                existing_msg = db.query(Message).filter(Message.whatsapp_message_id == wmsg_id).first()
+                if existing_msg:
+                    print(f"[Webhook] Message with whatsappMessageId '{wmsg_id}' already exists. Skipping insertion.")
+                    return
+
             inbound_msg = Message(
                 conversation_id=conv.id,
+                client_uuid=msg_uuid,
+                tenant_id=tenant_id,
+                session_id=ws_session.id,
                 direction="inbound",
+                origin="inbound",
                 sender_type="customer",
                 content=message_body,
-                status="read"
+                status="read",
+                ack_state="read",
+                whatsapp_message_id=wmsg_id
             )
             db.add(inbound_msg)
             db.commit()
@@ -185,11 +228,17 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
             # Publish real-time events for inbound message
             inbound_msg_data = {
                 "id": str(inbound_msg.id),
+                "client_uuid": str(inbound_msg.client_uuid) if inbound_msg.client_uuid else None,
                 "conversation_id": str(inbound_msg.conversation_id),
+                "tenant_id": str(inbound_msg.tenant_id) if inbound_msg.tenant_id else None,
+                "session_id": str(inbound_msg.session_id) if inbound_msg.session_id else None,
                 "direction": inbound_msg.direction,
+                "origin": inbound_msg.origin,
                 "sender_type": inbound_msg.sender_type,
                 "content": inbound_msg.content,
                 "status": inbound_msg.status,
+                "ack_state": inbound_msg.ack_state,
+                "whatsapp_message_id": inbound_msg.whatsapp_message_id,
                 "created_at": inbound_msg.created_at.isoformat() if inbound_msg.created_at else None
             }
             conv_data = {
@@ -214,13 +263,18 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                 print(f"[Webhook - {session_id}] AI reply bypassed: monthly message limit reached for tenant {tenant_id}")
                 return
 
-            # 3. Look for an active AI bot bound to this session (if not paused by agent)
+            # 3. Look for an active AI bot bound to this session (if not paused by agent or human handoff)
             from datetime import datetime, timezone
             is_paused = False
-            if conv.bot_paused_until:
+            bypass_reason = ""
+            if conv.handoff_status in ["WAITING_AGENT", "HUMAN_ACTIVE"]:
+                is_paused = True
+                bypass_reason = f"handoff_status is {conv.handoff_status}"
+            elif conv.bot_paused_until:
                 now = datetime.now(timezone.utc)
                 if conv.bot_paused_until > now:
                     is_paused = True
+                    bypass_reason = f"bot paused until {conv.bot_paused_until}"
             
             bot = None
             if not is_paused:
@@ -229,55 +283,101 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                     Chatbot.is_active == True
                 ).first()
             else:
-                print(f"[Webhook - {session_id}] AI chatbot bypassed: Conversation {conv.id} is owned by an agent (bot paused until {conv.bot_paused_until})")
+                print(f"[Webhook - {session_id}] AI chatbot bypassed: Conversation {conv.id} ({bypass_reason})")
 
             if bot:
                 print(f"[Webhook - {session_id}] Routing to Chatbot: {bot.name}")
+                t_db = int((time.time() - t_start) * 1000)
                 
                 # Fetch RAG context if enabled
+                t_rag_start = time.time()
                 kb_context = ""
                 if bot.rag_enabled:
                     kb_context = await rag_service.fetch_matching_context(db, ws_session.id, message_body)
+                t_rag = int((time.time() - t_rag_start) * 1000)
 
-                injected_prompt = bot.system_prompt
-                if kb_context:
-                    injected_prompt += f"\n\nUse the following verified facts to answer the customer request:\n{kb_context}\n\nImportant: If the info is not in the context, politely let the customer know."
-
-                # Generate AI response via Ollama (or configured provider)
-                reply = await ai_gateway.generate_response(
-                    prompt=message_body,
-                    system_prompt=injected_prompt,
-                    model=bot.model_name,
-                    db=db,
-                    tenant_id=tenant_id,
-                    chatbot_id=bot.id
-                )
-
-                # 4. Persist outbound bot reply with queued ACK status
-                outbound_msg = Message(
-                    conversation_id=conv.id,
-                    direction="outbound",
-                    sender_type="bot",
-                    content=reply,
-                    status="queued"
-                )
-                db.add(outbound_msg)
-                db.commit()
-                db.refresh(outbound_msg)
-
-                # Update conversation last activity
-                conv.last_message_at = outbound_msg.created_at
+                # 1. Intent Classifier & Specialized Agent Router (Phase 5 & 6)
+                from app.services.ai_service import classify_intent
+                detected_intent = classify_intent(message_body)
+                
+                # Persist the intent in conversation memory (Phase 7)
+                conv.last_intent = detected_intent
                 db.commit()
                 db.refresh(conv)
+                print(f"[Webhook - {session_id}] Intent Classify & Route: {detected_intent}")
+
+                # Prompt Assembly
+                t_prompt_start = time.time()
+                from app.services.ai_service import assemble_layered_prompt
+                injected_prompt = assemble_layered_prompt(bot, conv, kb_context, intent=detected_intent)
+                t_prompt = int((time.time() - t_prompt_start) * 1000)
+
+                # Capture necessary IDs to prevent using detached SQLAlchemy objects
+                conv_id = conv.id
+                ws_session_id = ws_session.id
+
+                # Close database session to release connection to the pool during slow LLM inference!
+                db.close()
+
+                # Generate AI response via Ollama (or configured provider)
+                t_model_start = time.time()
+                db_fresh = SessionLocal()
+                try:
+                    reply = await ai_gateway.generate_response(
+                        prompt=message_body,
+                        system_prompt=injected_prompt,
+                        model=bot.model_name,
+                        db=db_fresh,
+                        tenant_id=tenant_id,
+                        chatbot_id=bot.id
+                    )
+                finally:
+                    db_fresh.close()
+                t_model = int((time.time() - t_model_start) * 1000)
+
+                # Re-open session to persist outbound bot reply
+                db = SessionLocal()
+                try:
+                    # 4. Persist outbound bot reply with queued ACK status
+                    outbound_msg = Message(
+                        conversation_id=conv_id,
+                        tenant_id=tenant_id,
+                        session_id=ws_session_id,
+                        direction="outbound",
+                        origin="outbound",
+                        sender_type="bot",
+                        content=reply,
+                        status="queued",
+                        ack_state="queued"
+                    )
+                    db.add(outbound_msg)
+                    db.commit()
+                    db.refresh(outbound_msg)
+
+                    # Update conversation last activity
+                    conv_db = db.query(Conversation).filter(Conversation.id == conv_id).first()
+                    if conv_db:
+                        conv_db.last_message_at = outbound_msg.created_at
+                        db.commit()
+                        db.refresh(conv_db)
+                except Exception as db_err:
+                    print(f"[Webhook - {session_id}] Failed to save outbound reply to DB:", db_err)
+                    db.rollback()
 
                 # Publish real-time events for bot reply
                 outbound_msg_data = {
                     "id": str(outbound_msg.id),
+                    "client_uuid": str(outbound_msg.client_uuid) if outbound_msg.client_uuid else None,
                     "conversation_id": str(outbound_msg.conversation_id),
+                    "tenant_id": str(outbound_msg.tenant_id) if outbound_msg.tenant_id else None,
+                    "session_id": str(outbound_msg.session_id) if outbound_msg.session_id else None,
                     "direction": outbound_msg.direction,
+                    "origin": outbound_msg.origin,
                     "sender_type": outbound_msg.sender_type,
                     "content": outbound_msg.content,
                     "status": outbound_msg.status,
+                    "ack_state": outbound_msg.ack_state,
+                    "whatsapp_message_id": outbound_msg.whatsapp_message_id,
                     "created_at": outbound_msg.created_at.isoformat() if outbound_msg.created_at else None
                 }
                 conv_data = {
@@ -293,7 +393,19 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                 publish_tenant_event_sync(str(tenant_id), "conversation", conv_data)
 
                 # 5. ── UNIFIED DISPATCHER ──
-                success = await unified_dispatch(str(ws_session.id), customer_phone, reply, str(outbound_msg.id))
+                t_delivery_start = time.time()
+                from app.models.all_models import TenantSetting
+                t_settings = db.query(TenantSetting).filter(TenantSetting.tenant_id == tenant_id).first()
+                opts = {
+                    "replyDelay": t_settings.reply_delay if t_settings else 2,
+                    "simulateTypingDelay": t_settings.simulate_typing_delay if t_settings else 1000,
+                    "sendMode": t_settings.send_mode if t_settings else "humanized"
+                }
+                success = await unified_dispatch(str(ws_session.id), customer_phone, reply, str(outbound_msg.id), opts)
+                t_delivery = int((time.time() - t_delivery_start) * 1000)
+                
+                t_total = int((time.time() - t_start) * 1000)
+                print(f"[Latency Profile] DB = {t_db} ms, RAG = {t_rag} ms, Prompt = {t_prompt} ms, Model = {t_model} ms, Delivery = {t_delivery} ms, Total = {t_total} ms")
                 
                 if not success:
                     outbound_msg.status = "failed"
@@ -338,6 +450,7 @@ async def process_ack_webhook(session_id: str, data_dict: dict):
 
         if msg:
             msg.status = status
+            msg.ack_state = status
             if whatsapp_message_id:
                 msg.whatsapp_message_id = whatsapp_message_id
             db.commit()
@@ -349,11 +462,17 @@ async def process_ack_webhook(session_id: str, data_dict: dict):
             # Publish real-time event to WebSockets
             message_data = {
                 "id": str(msg.id),
+                "client_uuid": str(msg.client_uuid) if msg.client_uuid else None,
                 "conversation_id": str(msg.conversation_id),
+                "tenant_id": str(msg.tenant_id) if msg.tenant_id else None,
+                "session_id": str(msg.session_id) if msg.session_id else None,
                 "direction": msg.direction,
+                "origin": msg.origin,
                 "sender_type": msg.sender_type,
                 "content": msg.content,
                 "status": msg.status,
+                "ack_state": msg.ack_state,
+                "whatsapp_message_id": msg.whatsapp_message_id,
                 "created_at": msg.created_at.isoformat() if msg.created_at else None
             }
             conv_data = {
@@ -492,6 +611,8 @@ async def receive_engine_webhook(
         "body": getattr(data, "body", ""),
         "pushName": getattr(data, "pushName", ""),
         "messageId": getattr(data, "messageId", ""),
+        "rawRemoteJid": getattr(data, "rawRemoteJid", ""),
+        "rawParticipant": getattr(data, "rawParticipant", ""),
         "timestamp": getattr(data, "timestamp", 0),
     }
     background_tasks.add_task(process_incoming_chat_pipeline, session_id, event, data_dict)

@@ -23,10 +23,16 @@ class Settings:
     JWT_SECRET: str = os.getenv("JWT_SECRET", "VeryStrongJWTSecret987654321!")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 Days Token validity
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
     # Razorpay Configurations
     RAZORPAY_KEY_ID: str = os.getenv("RAZORPAY_KEY_ID", "rzp_test_mockKeyId12345")
     RAZORPAY_KEY_SECRET: str = os.getenv("RAZORPAY_KEY_SECRET", "mockSecretKey67890")
     RAZORPAY_WEBHOOK_SECRET: str = os.getenv("RAZORPAY_WEBHOOK_SECRET", "mockWebhookSecret112233")
+    PAYMENT_MODE: str = os.getenv("PAYMENT_MODE", "test")
 
 settings = Settings()
+
+# Environmental SRE critical validations check complete
+

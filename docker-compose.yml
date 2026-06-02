@@ -69,6 +69,10 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - JWT_SECRET=${JWT_SECRET:-VeryStrongJWTSecret987654321!}
       - WHATSAPP_ENGINE_URL=http://whatsapp-engine:3000
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-rzp_test_mockKeyId12345}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-mockSecretKey67890}
+      - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-mockWebhookSecret112233}
+      - PAYMENT_MODE=${PAYMENT_MODE:-test}
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +82,11 @@ services:
       resources:
         limits:
           memory: 2G
+    volumes:
+      - uploads_data:/app/uploads
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/containers:/app/docker-logs:ro
+      - /home/ubuntu/whatsapp-ai-saas:/app/project-files:ro
 
   # Celery Background Workers (Campaign Dispatches & PDF Vectorization)
   worker:
@@ -90,6 +99,10 @@ services:
       - DATABASE_URL=postgresql://${DB_USER:-saas_admin}:${DB_PASSWORD:-SecretSaaSPassword123!}@postgres:5432/${DB_NAME:-saas_whatsapp}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-SecretRedisPassword123!}@redis:6379/0
       - OLLAMA_HOST=http://ollama:11434
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-rzp_test_mockKeyId12345}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-mockSecretKey67890}
+      - RAZORPAY_WEBHOOK_SECRET=${RAZORPAY_WEBHOOK_SECRET:-mockWebhookSecret112233}
+      - PAYMENT_MODE=${PAYMENT_MODE:-test}
     depends_on:
       redis:
         condition: service_healthy
@@ -97,6 +110,8 @@ services:
       resources:
         limits:
           memory: 2G
+    volumes:
+      - uploads_data:/app/uploads
 
   # WhatsApp Node.js Engine (Baileys)
   whatsapp-engine:
@@ -132,7 +147,9 @@ services:
     ports:
       - "30000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - NEXT_PUBLIC_API_URL=http://144.24.126.153:8080/api/v1
+      - NEXT_PUBLIC_RAZORPAY_KEY=${NEXT_PUBLIC_RAZORPAY_KEY:-rzp_test_mockKeyId12345}
+      - PAYMENT_MODE=${PAYMENT_MODE:-test}
     deploy:
       resources:
         limits:
@@ -158,3 +175,4 @@ volumes:
   redis_data:
   ollama_data:
   certs_data:
+  uploads_data:

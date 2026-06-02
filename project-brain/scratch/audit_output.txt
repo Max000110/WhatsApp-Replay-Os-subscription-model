@@ -1,0 +1,569 @@
+Running Audit: Admin Login...
+================================================================================
+AUDIT ACTION: Admin Login
+Timestamp: 2026-05-30T09:24:25.770801+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/auth/login",
+  "method": "POST",
+  "body": {
+    "email": "admin@replyos.com",
+    "password": "ReplyOS@SuperAdmin2024!"
+  }
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "must_change_password": false,
+  "totp_enabled": false,
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODAxNDAyNjYsInN1YiI6IjgwYTU0NWM1LTMxZTQtNGNjYi1iYjkzLTEzZWVhMzdhZDVmNCIsInNjb3BlcyI6WyJzdXBlcl9hZG1pbiJdLCJ0b3RwX3ZlcmlmaWVkIjp0cnVlfQ.lr3QDwS_QqkPGkIo2RmccAqhPKXXzEE6_3dwOE3BXME",
+  "token_type": "bearer",
+  "role": "admin",
+  "tenant_id": "70391270-be3e-4e83-9bae-6c45472e0095"
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "note": "Auth request is credentials matching. No DB pre-state changes required."
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "note": "Admin user validated. must_change_password is f."
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "a3625b1c-99f8-4875-823b-1cdb5b2bacaf",
+  "action_type": "SUCCESSFUL_ADMIN_LOGIN",
+  "target_tenant_id": null,
+  "affected_resources": "auth",
+  "old_state": null,
+  "new_state": {
+    "email": "admin@replyos.com"
+  },
+  "created_at": "2026-05-30T09:24:25.776467+00:00"
+}
+================================================================================
+
+
+Running Audit: Diagnostics (System Health)...
+================================================================================
+AUDIT ACTION: Diagnostics - System Health
+Timestamp: 2026-05-30T09:24:26.052241+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/system-health",
+  "method": "GET"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "system": {
+    "cpu_percent": 14.2,
+    "ram_percent": 11.5,
+    "disk_percent": 21.2
+  },
+  "services": {
+    "postgres": "online",
+    "redis": "online",
+    "redis_latency_ms": 0,
+    "whatsapp_engine": "healthy",
+    "whatsapp_active_sessions": 1,
+    "ai_runtime": "online",
+    "websockets": {
+      "status": "online",
+      "active_tenants": 1,
+      "active_connections": 1
+    },
+    "celery_workers": {
+      "status": "online",
+      "queue_size": 0
+    }
+  },
+  "emergency_system_lock": false
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "note": "Read-only operation."
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "note": "Read-only operation."
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "note": "System diagnostics querying does not write an audit log row."
+}
+================================================================================
+
+
+Running Audit: Diagnostics (Storage Report)...
+================================================================================
+AUDIT ACTION: Diagnostics - Storage Report
+Timestamp: 2026-05-30T09:24:27.091418+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/storage-report",
+  "method": "GET"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "total_storage": 154894188544,
+  "used_storage": 32757219328,
+  "free_storage": 122120192000,
+  "docker_images_size": 13140874981,
+  "docker_volume_size": 1150450328,
+  "docker_cache_size": 3552105571,
+  "builder_cache_size": 3552105571,
+  "container_logs_size": 700812,
+  "database_size": 10624023,
+  "redis_size": 2052856,
+  "project_files_size": 1752006,
+  "uploads_size": 0,
+  "backups_size": 201970,
+  "temporary_files_size": 0
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "note": "Read-only operation."
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "note": "Read-only operation."
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "note": "Diagnostics querying does not write an audit log row."
+}
+================================================================================
+
+
+Running Audit: Plan Changes...
+================================================================================
+AUDIT ACTION: Plan Change
+Timestamp: 2026-05-30T09:24:27.364835+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/db29142a-ec07-480f-89f4-5d366ebf6736/change-plan",
+  "method": "POST",
+  "body": {
+    "plan_tier": "pro",
+    "max_bots": 5,
+    "max_messages": 50000,
+    "days": 30
+  }
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "subscription": {
+    "plan_tier": "pro",
+    "max_bots": 5,
+    "max_messages": 50000,
+    "current_period_end": "2027-01-24T16:14:41.211070+00:00"
+  }
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "plan_tier": "pro",
+  "status": "active",
+  "max_bots": 9,
+  "max_messages_per_month": 99999,
+  "current_period_end": "2026-12-25T16:14:41.211070+00:00"
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "plan_tier": "pro",
+  "status": "active",
+  "max_bots": 5,
+  "max_messages_per_month": 50000,
+  "current_period_end": "2027-01-24T16:14:41.211070+00:00"
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "70722c95-ab68-4f08-820a-a6a4b63363cc",
+  "action_type": "OVERRIDE_SUBSCRIPTION_PLAN",
+  "target_tenant_id": "db29142a-ec07-480f-89f4-5d366ebf6736",
+  "affected_resources": "subscription, tenant, users",
+  "old_state": {
+    "expiry": "2026-12-25T16:14:41.211070+00:00",
+    "plan_tier": "pro"
+  },
+  "new_state": {
+    "expiry": "2027-01-24T16:14:41.211070+00:00",
+    "plan_tier": "pro",
+    "days_added": 30
+  },
+  "created_at": "2026-05-30T09:24:27.375720+00:00"
+}
+================================================================================
+
+
+Running Audit: Suspend Tenant...
+================================================================================
+AUDIT ACTION: Suspend Tenant
+Timestamp: 2026-05-30T09:24:27.394628+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/db29142a-ec07-480f-89f4-5d366ebf6736/suspend",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Tenant afzal suspended successfully."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "status": "active"
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "status": "suspended"
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "7c5d6745-d4f1-4d3e-bf53-7d932fc92241",
+  "action_type": "SUSPEND_TENANT",
+  "target_tenant_id": "db29142a-ec07-480f-89f4-5d366ebf6736",
+  "affected_resources": "tenant, users, subscription",
+  "old_state": {
+    "status": "active"
+  },
+  "new_state": {
+    "status": "suspended"
+  },
+  "created_at": "2026-05-30T09:24:27.405800+00:00"
+}
+================================================================================
+
+
+Running Audit: Reactivate Tenant...
+================================================================================
+AUDIT ACTION: Reactivate Tenant
+Timestamp: 2026-05-30T09:24:27.424076+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/db29142a-ec07-480f-89f4-5d366ebf6736/reactivate",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Tenant afzal reactivated successfully."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "status": "suspended"
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "status": "active"
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "23c64626-a6ec-4c46-bcca-4259a8ea6baa",
+  "action_type": "REACTIVATE_TENANT",
+  "target_tenant_id": "db29142a-ec07-480f-89f4-5d366ebf6736",
+  "affected_resources": "tenant, users, subscription",
+  "old_state": {
+    "status": "suspended"
+  },
+  "new_state": {
+    "status": "active"
+  },
+  "created_at": "2026-05-30T09:24:27.434900+00:00"
+}
+================================================================================
+
+
+Running Audit: Quota Override...
+================================================================================
+AUDIT ACTION: Quota Override
+Timestamp: 2026-05-30T09:24:27.452776+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/db29142a-ec07-480f-89f4-5d366ebf6736/quotas",
+  "method": "POST",
+  "body": {
+    "max_bots": 9,
+    "max_messages": 99999
+  }
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "max_bots": 9,
+  "max_messages": 99999
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "max_bots": 5,
+  "max_messages_per_month": 50000
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "max_bots": 9,
+  "max_messages_per_month": 99999
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "b1f1f889-e98c-42a6-bbb9-d3caa8889b92",
+  "action_type": "OVERRIDE_QUOTAS",
+  "target_tenant_id": "db29142a-ec07-480f-89f4-5d366ebf6736",
+  "affected_resources": "subscription",
+  "old_state": {
+    "max_bots": 5,
+    "max_messages": 50000
+  },
+  "new_state": {
+    "max_bots": 9,
+    "max_messages": 99999
+  },
+  "created_at": "2026-05-30T09:24:27.461779+00:00"
+}
+================================================================================
+
+
+Running Audit: Reset Usage Counters...
+================================================================================
+AUDIT ACTION: Reset Usage Counters
+Timestamp: 2026-05-30T09:24:27.480798+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/db29142a-ec07-480f-89f4-5d366ebf6736/reset-usage",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Tenant db29142a-ec07-480f-89f4-5d366ebf6736 counters successfully reset. cleared 0 logs."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "count": 0
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "count": 0
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "6118c9f3-b816-4c6b-af88-73503c6b899a",
+  "action_type": "RESET_USAGE_COUNTERS",
+  "target_tenant_id": "db29142a-ec07-480f-89f4-5d366ebf6736",
+  "affected_resources": "messages",
+  "old_state": null,
+  "new_state": {
+    "deleted_rows_count": 0
+  },
+  "created_at": "2026-05-30T09:24:27.488482+00:00"
+}
+================================================================================
+
+
+Running Audit: Disconnect Session...
+================================================================================
+AUDIT ACTION: Disconnect Session
+Timestamp: 2026-05-30T09:24:27.505922+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/tenants/57f731d3-59e7-4fcb-b068-eecb6d54497a/revoke-sessions",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "All WhatsApp engine sessions disconnected."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+[
+  {
+    "id": "932086bb-6195-4be2-b58b-6a7344e15f8d",
+    "status": "disconnected"
+  }
+]
+----------------------------------------
+DATABASE STATE AFTER:
+[
+  {
+    "id": "932086bb-6195-4be2-b58b-6a7344e15f8d",
+    "status": "disconnected"
+  }
+]
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+null
+================================================================================
+
+
+Running Audit: Emergency Lock...
+================================================================================
+AUDIT ACTION: Emergency Lock
+Timestamp: 2026-05-30T09:24:27.536363+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/system/emergency-lock",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Global system emergency lockdown has been ACTIVATED. All tenant traffic blocked."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "redis_emergency_system_lock": null
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "redis_emergency_system_lock": "true"
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "29a28982-3248-465d-935b-f50a30d56288",
+  "action_type": "EMERGENCY_SYSTEM_LOCK",
+  "target_tenant_id": null,
+  "affected_resources": "global_system_access",
+  "old_state": null,
+  "new_state": {
+    "emergency_system_lock": "true"
+  },
+  "created_at": "2026-05-30T09:24:27.540718+00:00"
+}
+================================================================================
+
+
+Running Audit: Emergency Unlock...
+================================================================================
+AUDIT ACTION: Emergency Unlock
+Timestamp: 2026-05-30T09:24:27.601186+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/system/emergency-unlock",
+  "method": "POST"
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Global system emergency lockdown has been DEACTIVATED. Normal traffic restored."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "redis_emergency_system_lock": "true"
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "redis_emergency_system_lock": null
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+{
+  "id": "a7765475-6f45-492f-9647-9c64e9fca122",
+  "action_type": "EMERGENCY_SYSTEM_UNLOCK",
+  "target_tenant_id": null,
+  "affected_resources": "global_system_access",
+  "old_state": null,
+  "new_state": {
+    "emergency_system_lock": "false"
+  },
+  "created_at": "2026-05-30T09:24:27.605640+00:00"
+}
+================================================================================
+
+
+Running Audit: Broadcast Maintenance...
+================================================================================
+AUDIT ACTION: Broadcast Maintenance
+Timestamp: 2026-05-30T09:24:27.618026+00:00
+----------------------------------------
+API REQUEST:
+{
+  "url": "/admin/broadcast-maintenance",
+  "method": "POST",
+  "body": {
+    "message": "[SYSTEM MAINTENANCE] Platform upgrade scheduled for 02:00 UTC."
+  }
+}
+----------------------------------------
+API RESPONSE:
+Status: 200
+{
+  "status": "success",
+  "message": "Global maintenance warning successfully broadcasted."
+}
+----------------------------------------
+DATABASE STATE BEFORE:
+{
+  "note": "Broadcast is transient WebSocket/PubSub event propagation."
+}
+----------------------------------------
+DATABASE STATE AFTER:
+{
+  "note": "Broadcast is transient WebSocket/PubSub event propagation."
+}
+----------------------------------------
+AUDIT LOG PERSISTED ENTRY:
+null
+================================================================================
+
+

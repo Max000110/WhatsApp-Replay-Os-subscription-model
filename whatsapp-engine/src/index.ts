@@ -42,18 +42,35 @@ app.post("/sessions/init", async (req, res) => {
 
 // REST Router: Send/Queue outbound WhatsApp messages
 app.post("/sessions/send", async (req, res) => {
-  const { sessionId, to, text, messageId } = req.body;
+  const { sessionId, to, text, messageId, options } = req.body;
   if (!sessionId || !to || !text) {
     return res.status(400).json({ error: "sessionId, to, and text are required fields" });
   }
 
   try {
-    const success = await baileysManager.queueOutgoingMessage(sessionId, to, text, messageId);
+    const success = await baileysManager.queueOutgoingMessage(sessionId, to, text, messageId, options);
     if (success) {
       return res.status(200).json({ status: "queued", message: "Message added to outbound anti-ban queue." });
     } else {
       return res.status(500).json({ error: "Failed to queue message. Session might not be initialized." });
     }
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// REST Router: Clean up and close session
+app.delete("/sessions/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    // BaileysManager's cleanupSession method is private, but we can make it public or call it here.
+    // Wait, in baileys-manager.ts:
+    // private async cleanupSession(sessionId: string)
+    // We should make it public inside baileys-manager.ts! Let's check how we call it.
+    // Let's call a public wrapper or make it public.
+    // Yes, we will modify baileys-manager.ts to make it public.
+    await (baileysManager as any).cleanupSession(sessionId);
+    return res.status(200).json({ status: "deleted", message: `Session ${sessionId} terminated and cleaned up.` });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }

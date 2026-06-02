@@ -1,80 +1,130 @@
-# SaaS Billing & Plan Architecture
-
-This document outlines the ReplyOS monetization model, database schema definitions for payment logs, webhook handlers, and quota resets.
-
----
-
-## 1. Subscription Tiers & Limits
-
-ReplyOS operates on four subscription tiers, configured inside the billing router module (`PLAN_DETAILS` in `billing.py`):
-
-1. **Free Plan** (`free`):
-   - Price: 0 INR
-   - Maximum active bots: 1
-   - Maximum monthly outbound messages: 500
-2. **Starter Plan** (`starter`):
-   - Price: 999 INR / month (represented as 99,900 Paise in Razorpay)
-   - Maximum active bots: 2
-   - Maximum monthly outbound messages: 5,000
-3. **Pro Plan** (`pro`):
-   - Price: 2,999 INR / month (represented as 299,900 Paise in Razorpay)
-   - Maximum active bots: 5
-   - Maximum monthly outbound messages: 50,000
-4. **Agency Plan** (`agency`):
-   - Price: 9,999 INR / month (represented as 999,900 Paise in Razorpay)
-   - Maximum active bots: 20
-   - Maximum monthly outbound messages: 1,000,000
+# Billing Architecture — ReplyOS
+**Last Updated**: 2026-05-29T19:27:25+05:30
 
 ---
 
-## 2. Relational Schema for Payments & Subscriptions
+## Plan Pricing (INR)
 
-Extended SQLAlchemy database schemas mapped in `all_models.py`:
-
-### A. Subscriptions (`subscriptions`)
-Tracks active plans, states, and payment details:
-*   `stripe_subscription_id`: String (legacy support).
-*   `razorpay_subscription_id`: String.
-*   `razorpay_order_id`: String (matches current order signature).
-*   `razorpay_payment_id`: String (last active captured payment).
-*   `billing_cycle`: String (default `"monthly"`).
-*   `renewal_state`: String (default `"auto"`).
-*   `status`: String (`"active"`, `"expired"`, `"suspended"`, `"past_due"`).
-
-### B. Payment Transactions (`payment_transactions`)
-Records individual purchase attempts:
-*   `order_id`: String (Unique Razorpay Order identifier).
-*   `payment_id`: String (Captured transaction ID).
-*   `signature`: String (HMAC validation signature).
-*   `amount`: Integer (Paise).
-*   `status`: String (`"created"`, `"captured"`, `"failed"`).
-*   `plan_tier`: String.
-
-### C. Tenant Quotas (`tenant_quotas`)
-Caches active quotas to bypass heavy query joins:
-*   `max_bots`: Integer.
-*   `max_messages`: Integer.
-*   `bots_used`: Integer.
-*   `messages_used`: Integer.
-*   `reset_at`: Timestamp.
+| Plan | Monthly Limit | Sessions | Bots | Amount (paise) |
+|---|---|---|---|---|
+| free | 500 messages | 1 | 1 | 0 |
+| starter | 5,000 messages | 2 | 2 | 99,900 |
+| pro | 50,000 messages | 5 | 5 | 299,900 |
+| agency | 1,000,000 messages | 20 | 20 | 999,900 |
 
 ---
 
-## 3. Webhook Payment Verification Loop
+## Order Creation Pipeline
 
-When a user completes payment via Razorpay, a secure webhook is dispatched from Razorpay to `/api/v1/billing/webhook`:
-1. **Signature Verification**: Validates the webhook payload using `hmac.new(webhook_secret, raw_body, sha256)`.
-2. **Payload Parsing**: Extracts `notes.tenant_id` and `notes.plan_tier`.
-3. **Activation**:
-   - Queries or creates the tenant's `Subscription` record.
-   - Sets status to `"active"`.
-   - Extends the `current_period_end` date by 30 days.
-   - Refreshes matching limits in `tenant_quotas`.
+```
+"Upgrade Plan" click
+        │
+        ▼
+POST /api/v1/billing/create-order {plan_tier}
+        │
+        ▼
+FastAPI queries PLAN_DETAILS pricing config
+        │
+        ▼
+razorpay.Client.order.create({amount, currency: "INR", payment_capture: 1})
+        │
+        ▼
+INSERT payment_transactions (status: "created")
+        │
+        ▼
+Return {razorpay_order_id, amount, razorpay_key_id}
+        │
+        ▼
+Frontend loads checkout.js with order_id
+        │
+        ▼
+User completes payment → Razorpay callback
+```
 
 ---
 
-## 4. Quota Reset Mechanism
+## Signature Verification Loop
 
-A periodic background worker task runs to reset counts:
-*   Every tenant has a `reset_at` date in the `tenant_quotas` table.
-*   When `now > reset_at`, the worker resets `messages_used` to `0` and sets `reset_at` to `now + 30 days`.
+```
+Razorpay callback: {razorpay_payment_id, razorpay_order_id, razorpay_signature}
+        │
+        ▼
+POST /api/v1/billing/verify-payment
+        │
+        ▼
+client.utility.verify_payment_signature(params)
+        │
+  Signature valid?
+  ├─ No  → HTTP 400 signature mismatch
+  │
+  └─ Yes → UPDATE payment_transactions SET status="captured"
+           UPDATE subscriptions SET plan_tier, status="active", period_end=now()+30d
+           Reset monthly usage counter
+           WebSocket broadcast: subscription_updated
+```
+
+---
+
+## Webhook Pipeline
+
+```
+Razorpay server → POST /api/v1/payments/webhook
+        │
+        ▼
+Parse raw body (for HMAC) + verify signature
+        │
+        ▼
+Idempotency check: if tx.status == "captured" → skip (already processed)
+        │
+        ▼
+Event: payment.captured / order.paid
+  → Update tx to "captured"
+  → Extend subscription period
+  → Reset quota
+```
+
+---
+
+## Database Tables
+
+### `payment_transactions`
+```sql
+id          UUID PRIMARY KEY
+tenant_id   UUID REFERENCES tenants
+order_id    VARCHAR   -- razorpay order ID
+payment_id  VARCHAR   -- razorpay payment ID (set after capture)
+signature   VARCHAR   -- HMAC signature
+amount      INTEGER   -- paise
+status      VARCHAR   -- created → captured
+plan_tier   VARCHAR
+created_at  TIMESTAMP
+updated_at  TIMESTAMP
+```
+
+### `subscriptions` (on `tenants`)
+```sql
+plan_tier           VARCHAR  -- free/starter/pro/agency
+status              VARCHAR  -- active/expired/suspended/terminated
+current_period_end  TIMESTAMP
+monthly_message_count INTEGER
+max_monthly_messages  INTEGER
+max_sessions          INTEGER
+max_bots              INTEGER
+```
+
+---
+
+## Security Controls
+
+- `RAZORPAY_KEY_SECRET` — backend only, never exposed to frontend
+- Public key provisioned dynamically from API response (not hardcoded in frontend build)
+- Webhook HMAC verified using `RAZORPAY_WEBHOOK_SECRET` before any processing
+- Idempotency: duplicate payment events ignored if already `captured`
+
+---
+
+## Known Issues
+
+1. **INC-011 OPEN**: `PAYMENT_MODE=test` active — no real money collected
+2. Webhook endpoint not yet registered in Razorpay production dashboard
+3. Production keys (`rzp_live_*`) not yet provisioned

@@ -50,6 +50,8 @@ class WebhookData(BaseModel):
     phone: Optional[str] = None
     messageId: Optional[str] = None
     from_: Optional[str] = Field(None, alias="from")
+    rawRemoteJid: Optional[str] = None
+    rawParticipant: Optional[str] = None
     pushName: Optional[str] = None
     body: Optional[str] = None
     timestamp: Optional[int] = None
@@ -70,6 +72,17 @@ class BotCreate(BaseModel):
     model_name: Optional[str] = "qwen2.5:1.5b-instruct"
     temperature: Optional[float] = 0.4
     rag_enabled: Optional[bool] = False
+    personality: Optional[str] = "Friendly"
+    company_name: Optional[str] = None
+    services: Optional[str] = None
+    products: Optional[str] = None
+    pricing: Optional[str] = None
+    policies: Optional[str] = None
+    location: Optional[str] = None
+    working_hours: Optional[str] = None
+    contact_details: Optional[str] = None
+    custom_instructions: Optional[str] = None
+    memory_enabled: Optional[bool] = False
 
 class BotUpdate(BaseModel):
     session_id: Optional[UUID] = None
@@ -79,6 +92,17 @@ class BotUpdate(BaseModel):
     temperature: Optional[float] = None
     rag_enabled: Optional[bool] = None
     is_active: Optional[bool] = None
+    personality: Optional[str] = None
+    company_name: Optional[str] = None
+    services: Optional[str] = None
+    products: Optional[str] = None
+    pricing: Optional[str] = None
+    policies: Optional[str] = None
+    location: Optional[str] = None
+    working_hours: Optional[str] = None
+    contact_details: Optional[str] = None
+    custom_instructions: Optional[str] = None
+    memory_enabled: Optional[bool] = None
 
 class BotResponse(BaseModel):
     id: UUID
@@ -90,6 +114,17 @@ class BotResponse(BaseModel):
     temperature: float
     rag_enabled: bool
     is_active: bool
+    personality: str
+    company_name: Optional[str] = None
+    services: Optional[str] = None
+    products: Optional[str] = None
+    pricing: Optional[str] = None
+    policies: Optional[str] = None
+    location: Optional[str] = None
+    working_hours: Optional[str] = None
+    contact_details: Optional[str] = None
+    custom_instructions: Optional[str] = None
+    memory_enabled: bool
     created_at: datetime
 
     class Config:
@@ -98,13 +133,19 @@ class BotResponse(BaseModel):
 # Conversation & Chat Schemas
 class MessageResponse(BaseModel):
     id: UUID
+    client_uuid: Optional[UUID] = None
     conversation_id: UUID
+    tenant_id: Optional[UUID] = None
+    session_id: Optional[UUID] = None
     direction: str
+    origin: Optional[str] = None
     sender_type: str
     content: str
     media_url: Optional[str] = None
     media_type: Optional[str] = None
     status: str
+    ack_state: Optional[str] = None
+    whatsapp_message_id: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -117,11 +158,29 @@ class ConversationResponse(BaseModel):
     customer_phone: str
     customer_name: Optional[str] = None
     is_archived: bool
+    customer_preferences: Optional[str] = None
+    past_interactions_summary: Optional[str] = None
+    open_tickets: Optional[str] = None
+    lead_status: Optional[str] = "cold"
+    
+    # Handoff & Memory fields
+    handoff_status: Optional[str] = "AI_ACTIVE"
+    assigned_agent_id: Optional[UUID] = None
+    last_purchase: Optional[str] = None
+    lead_stage: Optional[str] = "cold"
+    
     last_message_at: datetime
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+class ConversationUpdate(BaseModel):
+    customer_preferences: Optional[str] = None
+    past_interactions_summary: Optional[str] = None
+    open_tickets: Optional[str] = None
+    lead_status: Optional[str] = None
+    is_archived: Optional[bool] = None
 
 class SendMessageRequest(BaseModel):
     session_id: UUID
@@ -162,6 +221,7 @@ class CampaignCreate(BaseModel):
     template_text: str
     scheduled_time: datetime
     recipient_phones: List[str]
+    recurring_interval: Optional[str] = "none" # none, hourly, daily, weekly
 
 class CampaignResponse(BaseModel):
     id: UUID
@@ -170,6 +230,70 @@ class CampaignResponse(BaseModel):
     name: str
     template_text: str
     scheduled_time: datetime
+    recurring_interval: str
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# Prompt Testing Console Schemas
+class PromptTestRequest(BaseModel):
+    test_question: str
+    conversation_id: Optional[UUID] = None
+
+class PromptTestResponse(BaseModel):
+    constructed_prompt: str
+    retrieved_context: str
+    llm_response: str
+
+# Google Auth
+class GoogleAuthRequest(BaseModel):
+    id_token: str
+
+# Human Handoff
+class HandoffStatusUpdate(BaseModel):
+    status: str  # AI_ACTIVE, WAITING_AGENT, HUMAN_ACTIVE, RESOLVED
+    notes: Optional[str] = None
+
+# Support Agents
+class SupportAgentCreate(BaseModel):
+    name: str
+    email: EmailStr
+    department: str  # Support, Sales, Billing, Technical
+    skills: Optional[str] = None
+    status: Optional[str] = "available"
+
+class SupportAgentResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    name: str
+    email: str
+    department: str
+    skills: Optional[str] = None
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+# Google Calendar Booking
+class BookingCreate(BaseModel):
+    customer_phone: str
+    customer_email: EmailStr
+    booking_date: str  # YYYY-MM-DD
+    booking_time: str  # HH:MM
+    notes: Optional[str] = None
+
+class BookingResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    booking_id: str
+    calendar_event_id: str
+    customer_phone: str
+    customer_email: str
+    booking_date: str
+    booking_time: str
     status: str
     created_at: datetime
 

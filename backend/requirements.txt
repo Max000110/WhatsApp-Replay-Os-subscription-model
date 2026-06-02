@@ -11,3 +11,6 @@ redis==5.0.4
 celery==5.4.0
 python-multipart==0.0.9
 pypdf==4.2.0
+razorpay==2.0.1
+psutil==5.9.8
+

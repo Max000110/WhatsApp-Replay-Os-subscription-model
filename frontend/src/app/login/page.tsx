@@ -39,6 +39,7 @@ export default function LoginPage() {
     }
   };
 
+
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -127,6 +128,7 @@ export default function LoginPage() {
               {loading ? 'Validating credentials...' : 'Enter Console'}
               <ArrowRight className="h-4 w-4" />
             </button>
+
 
             <div className="text-center mt-6">
               <span className="text-xs text-slate-400">New to the platform? </span>

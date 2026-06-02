@@ -213,8 +213,16 @@ def run_campaign_broadcast_task(campaign_id: str):
                 publish_tenant_event_sync(str(tenant_id), "campaign", campaign_data)
                 break
 
+            from app.core.jid import normalize_jid
             session_id = campaign.session_id
-            recipient = log.recipient_phone
+            try:
+                recipient = normalize_jid(log.recipient_phone)
+            except ValueError as err:
+                print(f"[Celery Worker - Campaign] Rejecting invalid recipient '{log.recipient_phone}': {err}")
+                log.status = "failed"
+                log.error_message = str(err)
+                db.commit()
+                continue
 
             print(f"[Celery Worker - Campaign] Sending to {recipient}: {campaign.template_text[:20]}...")
 
@@ -235,13 +243,23 @@ def run_campaign_broadcast_task(campaign_id: str):
                 }
             })
 
+            from app.models.all_models import TenantSetting
+            t_settings = db.query(TenantSetting).filter(TenantSetting.tenant_id == tenant_id).first()
+            opts = {
+                "replyDelay": t_settings.reply_delay if t_settings else 2,
+                "simulateTypingDelay": t_settings.simulate_typing_delay if t_settings else 1000,
+                "sendMode": t_settings.send_mode if t_settings else "humanized"
+            }
+            send_interval = t_settings.campaign_send_interval if t_settings else 5
+
             # Trigger WhatsApp Engine message command via session service, passing log.id as message_id
             success = loop.run_until_complete(
                 session_service.send_whatsapp_message(
                     session_id=str(session_id),
                     to_phone=recipient,
                     text=campaign.template_text,
-                    message_id=str(log.id)
+                    message_id=str(log.id),
+                    options=opts
                 )
             )
 
@@ -268,8 +286,8 @@ def run_campaign_broadcast_task(campaign_id: str):
                 }
             })
 
-            # Enforce safety cooling-off delay between bulk dispatches (10s - 15s)
-            time.sleep(10 + (time.time() % 5))
+            # Enforce safety cooling-off delay between bulk dispatches based on user settings
+            time.sleep(send_interval)
 
         campaign.status = "completed"
         db.commit()
@@ -278,6 +296,52 @@ def run_campaign_broadcast_task(campaign_id: str):
         campaign_data["updated_at"] = campaign.updated_at.isoformat() if campaign.updated_at else None
         publish_tenant_event_sync(str(tenant_id), "campaign", campaign_data)
         print(f"[Celery Worker] Broadcast successfully completed for campaign: {campaign.name}")
+
+        # Handle recurring campaigns scheduling next run
+        rec_interval = campaign.recurring_interval
+        if rec_interval and rec_interval != "none":
+            from datetime import timedelta
+            next_time = campaign.scheduled_time
+            if rec_interval == "hourly":
+                next_time += timedelta(hours=1)
+            elif rec_interval == "daily":
+                next_time += timedelta(days=1)
+            elif rec_interval == "weekly":
+                next_time += timedelta(weeks=1)
+
+            print(f"[Celery Worker] Scheduling next iteration of recurring campaign '{campaign.name}' at {next_time}")
+            
+            # Create a duplicate Campaign for the next execution period
+            next_campaign = Campaign(
+                tenant_id=campaign.tenant_id,
+                session_id=campaign.session_id,
+                name=campaign.name,
+                template_text=campaign.template_text,
+                scheduled_time=next_time,
+                recurring_interval=rec_interval,
+                status="scheduled"
+            )
+            db.add(next_campaign)
+            db.commit()
+            db.refresh(next_campaign)
+
+            # Re-insert logs for the next execution campaign recipients
+            campaign_logs = db.query(CampaignLog).filter(CampaignLog.campaign_id == campaign.id).all()
+            for old_log in campaign_logs:
+                new_log = CampaignLog(
+                    campaign_id=next_campaign.id,
+                    recipient_phone=old_log.recipient_phone,
+                    status="pending"
+                )
+                db.add(new_log)
+            db.commit()
+
+            # Schedule future execution ETA in Celery
+            celery.send_task(
+                "worker.tasks.run_campaign_broadcast_task",
+                args=[str(next_campaign.id)],
+                eta=next_time
+            )
 
     except Exception as e:
         print(f"[Celery Worker] Campaign failed:", str(e))
@@ -340,14 +404,20 @@ def check_subscription_reminders_task():
                 ).first()
                 
                 if sess and sess.phone_number:
+                    from app.core.jid import normalize_jid
+                    try:
+                        target_phone = normalize_jid(sess.phone_number)
+                    except ValueError as err:
+                        print(f"[Reminders System] Skipping invalid session phone '{sess.phone_number}': {err}")
+                        continue
                     loop.run_until_complete(
                         session_service.send_whatsapp_message(
                             session_id=str(sess.id),
-                            to_phone=sess.phone_number,
+                            to_phone=target_phone,
                             text=f"[Billing] {msg_content}"
                         )
                     )
-                    print(f"[Reminders System] WhatsApp alert sent to {sess.phone_number}")
+                    print(f"[Reminders System] WhatsApp alert sent to {target_phone}")
                     
     except Exception as e:
         print("[Reminders System] Error executing checks:", e)
@@ -424,3 +494,157 @@ def process_autopay_renewals_task():
         print("[AutoPay] Scheduler error:", e)
     finally:
         db.close()
+
+
+@celery.task(name="worker.tasks.check_graceful_terminations_task")
+def check_graceful_terminations_task():
+    """
+    Periodic task processing Graceful Service Terminations (Mode 2).
+    For any tenant in 'PENDING TERMINATION' state whose 24-hour grace period is expired,
+    fully deactivates all services, suspends the subscription, disconnects active sessions,
+    and applies their configured Data Retention Policy (Archive vs. transactional hard Purge).
+    """
+    db = SessionLocal()
+    try:
+        from datetime import datetime, timezone
+        from app.models.all_models import Tenant, User, Subscription, WhatsAppSession, KBDocument, KnowledgeBase
+        from app.config import settings
+        import httpx
+        import os
+        now = datetime.now(timezone.utc)
+        
+        tenants = db.query(Tenant).filter(
+            Tenant.status == "PENDING TERMINATION",
+            Tenant.termination_grace_period_ends <= now
+        ).all()
+        
+        for tenant in tenants:
+            print(f"[Termination Worker] Executing grace period expiry for tenant {tenant.id} ({tenant.name}).")
+            
+            # 1. Update status to TERMINATED
+            tenant.status = "TERMINATED"
+            tenant.is_visible = True
+            
+            # 2. Deactivate all tenant users (safeguarding super admin accounts)
+            users = db.query(User).filter(User.tenant_id == tenant.id, User.role != "admin").all()
+            for u in users:
+                u.is_active = False
+                
+            # 3. Disable active subscription
+            sub = db.query(Subscription).filter(Subscription.tenant_id == tenant.id).first()
+            if sub:
+                sub.status = "suspended"
+                
+            # 4. Disconnect WhatsApp Sessions via Node Engine
+            sessions = db.query(WhatsAppSession).filter(WhatsAppSession.tenant_id == tenant.id).all()
+            for sess in sessions:
+                try:
+                    sess.status = "disconnected"
+                    # Call whatsapp engine API to remove session
+                    engine_url = f"{settings.WHATSAPP_ENGINE_URL}/sessions/{sess.id}"
+                    httpx.delete(engine_url, timeout=5.0)
+                except Exception as sess_err:
+                    print(f"[Termination Worker] FAILED disconnecting session {sess.id}: {sess_err}")
+            
+            db.commit()
+            
+            # 5. Execute Data Retention Policy (Archive vs. Delete Mode)
+            if tenant.data_retention_policy == "delete":
+                print(f"[Termination Worker] Policy is DELETE. Triggering secure transactional purge for tenant {tenant.id}...")
+                
+                # Retrieve files to delete from local disk first
+                kb_docs = db.query(KBDocument).join(KnowledgeBase).filter(KnowledgeBase.tenant_id == tenant.id).all()
+                for doc in kb_docs:
+                    if doc.file_path and os.path.exists(doc.file_path):
+                        try:
+                            os.remove(doc.file_path)
+                            print(f"[Purge System] Removed file: {doc.file_path}")
+                        except Exception as file_err:
+                            print(f"[Purge System] Error deleting file {doc.file_path}: {file_err}")
+                
+                # Delete tenant record (ORM Cascade will transactional-delete users, sessions, bots, KBs, campaigns, conversations, messages, logs)
+                db.delete(tenant)
+                db.commit()
+                print(f"[Termination Worker] Transactional purge completed for tenant {tenant.id}.")
+            else:
+                print(f"[Termination Worker] Policy is ARCHIVE. Tenant {tenant.id} data preserved.")
+                
+    except Exception as e:
+        print("[Termination Worker] Error executing graceful check:", e)
+    finally:
+        db.close()
+
+
+@celery.task(name="worker.tasks.scan_stuck_delivery_task")
+def scan_stuck_delivery_task():
+    """
+    BUG-001 Fix: Periodic scanner that detects outbound messages stuck in
+    'sent' status for more than 5 minutes and flags them as 'sent_carrier_pending'.
+
+    Root cause of delivery status delays:
+      1. Carrier or recipient device delay in returning WhatsApp ACK callbacks.
+      2. Recipient has read receipts disabled — no 'read' ACK ever fires.
+      3. WhatsApp network silently drops the ACK frame (rare but real).
+
+    This task prevents the UI from showing permanent 'sent' spinners by
+    transitioning messages to a terminal non-blocking state with a clear label.
+
+    Schedule: Run every 5 minutes via Celery Beat.
+    Threshold: 5 minutes (configurable via STUCK_DELIVERY_THRESHOLD_MINUTES).
+    """
+    db = SessionLocal()
+    try:
+        from datetime import datetime, timezone, timedelta
+        from app.models.all_models import Message, Conversation
+        from app.core.websocket import publish_tenant_event_sync
+
+        THRESHOLD_MINUTES = 5
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=THRESHOLD_MINUTES)
+
+        # Query outbound messages stuck in 'sent' older than threshold
+        stuck_messages = db.query(Message).filter(
+            Message.direction == "outbound",
+            Message.status == "sent",
+            Message.created_at <= cutoff
+        ).all()
+
+        if not stuck_messages:
+            print(f"[Delivery Scanner] No stuck 'sent' messages found at {now.isoformat()}")
+            db.close()
+            return
+
+        print(f"[Delivery Scanner] Found {len(stuck_messages)} stuck message(s) older than {THRESHOLD_MINUTES} minutes.")
+
+        updated_count = 0
+        for msg in stuck_messages:
+            try:
+                msg.status = "sent_carrier_pending"
+                db.commit()
+                db.refresh(msg)
+                updated_count += 1
+
+                # Broadcast updated status to tenant WebSocket clients
+                conv = db.query(Conversation).filter(Conversation.id == msg.conversation_id).first()
+                if conv:
+                    publish_tenant_event_sync(str(conv.tenant_id), "message_status_update", {
+                        "message_id": str(msg.id),
+                        "conversation_id": str(msg.conversation_id),
+                        "status": "sent_carrier_pending",
+                        "whatsapp_message_id": msg.whatsapp_message_id,
+                        "flagged_at": now.isoformat(),
+                        "reason": f"No delivery ACK received within {THRESHOLD_MINUTES} minutes"
+                    })
+
+            except Exception as msg_err:
+                print(f"[Delivery Scanner] Error updating message {msg.id}: {msg_err}")
+                db.rollback()
+                continue
+
+        print(f"[Delivery Scanner] Flagged {updated_count}/{len(stuck_messages)} stuck message(s) as 'sent_carrier_pending'.")
+
+    except Exception as e:
+        print("[Delivery Scanner] Scanner task error:", e)
+    finally:
+        db.close()
+

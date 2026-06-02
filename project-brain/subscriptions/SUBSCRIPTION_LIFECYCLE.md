@@ -1,97 +1,107 @@
-# Tenant Subscription Lifecycle & Reminder System
-
-This document outlines the state transition map, automated payment renewals, reminder notifications, and billing enforcement middleware.
+# Subscription Lifecycle — ReplyOS
+**Last Updated**: 2026-05-29T19:27:25+05:30
 
 ---
 
-## 1. Subscription State Transition Matrix
+## Plan Hierarchy
 
+| Tier | Monthly Messages | WhatsApp Sessions | Active Bots | Price (INR/mo) |
+|---|---|---|---|---|
+| `free` | 500 | 1 | 1 | ₹0 |
+| `starter` | 5,000 | 2 | 2 | ₹999 |
+| `pro` | 50,000 | 5 | 5 | ₹2,999 |
+| `agency` | 1,000,000 | 20 | 20 | ₹9,999 |
+
+Razorpay amounts (paise): Starter = 99900, Pro = 299900, Agency = 999900
+
+---
+
+## Subscription States
+
+| Status | Outbound Sends | AI Replies | Campaigns | Dashboard |
+|---|---|---|---|---|
+| `active` | ✅ Allowed | ✅ Allowed | ✅ Allowed | ✅ Full access |
+| `expired` | ❌ `HTTP 402` | ❌ Silently dropped | ❌ Paused | ⚠️ Locked overlay |
+| `suspended` | ❌ `HTTP 402` | ❌ Silently dropped | ❌ Paused | ⚠️ Locked overlay |
+| `terminated` | ❌ All routes `403` | ❌ Blocked | ❌ Blocked | ❌ Access denied |
+
+---
+
+## Enforcement Points
+
+### 1. API Middleware (`get_current_user`)
+- After JWT validation, checks `tenant.status`
+- `suspended` or `terminated` → immediate `403 Forbidden` on ALL routes
+
+### 2. Outbound Message Guard (`is_subscription_active()`)
+- Called in `chats.py` before every manual send
+- Called in `sessions.py` AI pipeline before LLM generation
+- Returns `False` → raises `HTTP 402 Payment Required`
+
+### 3. Monthly Message Limit Check
+- `has_exceeded_message_limit()` called in AI pipeline
+- Counts `outbound` messages in current billing period
+- Exceeds limit → AI generation skipped (silent drop)
+
+### 4. Celery Worker Campaign Guard
+- Each recipient dispatch in `run_campaign_broadcast_task` calls quota check
+- Subscription inactive → task aborts, campaign marked `failed`
+
+### 5. WebSocket Expiry Notification
+- On subscription expiry detection → publish `subscription_expired` event to tenant channel
+- Frontend receives → displays full-screen locked overlay
+
+---
+
+## Billing Flow
+
+### Upgrade Flow
 ```
-       [ Free Tier Signup ]
-                │
-                ▼
-      ┌───────────────────┐
-      │   Status: Active  │ <─────────────────────┐
-      └─────────┬─────────┘                       │
-                │                                 │ (User pays signature verify /
-                │ (Days Left == 0 /               │  Admin manual override)
-                │  Auto-Pay Charge Fails)         │
-                ▼                                 │
-      ┌───────────────────┐                       │
-      │ Status: Past_Due  │ (Grace Period: 3 days)│
-      └─────────┬─────────┘                       │
-                │                                 │
-                │ (Grace Period Exceeds /         │
-                │  Manual Suspend)                │
-                ▼                                 │
-      ┌───────────────────┐                       │
-      │ Status: Expired   ├───────────────────────┘
-      │   or Suspended    │
-      └───────────────────┘
+Frontend "Upgrade" button
+  → POST /api/v1/billing/create-order {plan_tier}
+  → Backend creates Razorpay order
+  → Returns {razorpay_order_id, amount, currency, razorpay_key_id}
+  → Frontend loads checkout.js
+  → User completes payment
+  → Razorpay callback {payment_id, order_id, signature}
+  → POST /api/v1/billing/verify-payment
+  → Backend verifies HMAC-SHA256 signature
+  → Success → Update subscription {plan_tier, status: active, period_end: +30 days}
+  → Reset monthly usage counter
+  → WebSocket broadcast → frontend unlocks
 ```
 
-*   **`active`**: Full resource access. Active bot and campaign schedules operate.
-*   **`past_due`**: Active period has ended but payment failed. Injects a 3-day grace period. Displays a header banner in the frontend dashboard.
-*   **`expired`**: Grace period ended. Outbound sends and AI bot reply modules are blocked.
-*   **`suspended`**: Super Admin manually revoked permissions. Workspace is locked.
-
----
-
-## 2. Subscription Reminder Systems
-
-A background worker task (`check_subscription_reminders_task` in `tasks.py`) runs periodically to verify active subscription periods:
-*   **7 Days Before Expiry**: Sends a warning to prepare payment.
-*   **3 Days Before Expiry**: Injects a dashboard notice reminding the user of the upcoming charge.
-*   **1 Day Before Expiry**: Outlines the Auto-Pay schedule.
-*   **Expiry Day**: Sends an urgent alert.
-*   **Post-Expiry**: Displays warning flags to pay immediately.
-
-### Communication Channels
-1.  **Dashboard Alert**: Publishes a `subscription_reminder` event via WebSockets to the client workspace.
-2.  **WhatsApp Notice**: Triggers an outbound dispatch using the connected session node to message the customer/owner phone number directly.
-3.  **Logs System**: Appends trace records to `/project-brain/logs/`.
-
----
-
-## 3. Automated Renewal Pipeline (Auto-Pay)
-
-The automated charging pipeline (`process_autopay_renewals_task` in `tasks.py`) processes renewals:
-1.  Queries subscriptions expiring in less than 24 hours with `renewal_state == 'auto'`.
-2.  Creates a transaction log in the `renewal_jobs` table.
-3.  Calls the Razorpay Subscription Charge API with the cached token.
-4.  **On Payment Capture Success**:
-    - Extends `current_period_end` by 30 days.
-    - Saves the invoice in the `billing_history` table.
-    - Resets metric counters in `tenant_quotas`.
-5.  **On Charge Decline**:
-    - Marks subscription status as `"past_due"`.
-    - Dispatches a warning alert over WhatsApp.
-
----
-
-## 4. Enforcement Middleware Code Blueprint
-
-Enforced in `chats.py`, `sessions.py`, and background campaigns `tasks.py`:
-```python
-# app/routers/billing.py
-def is_subscription_active(db: Session, tenant_id: UUID) -> bool:
-    sub = db.query(Subscription).filter(Subscription.tenant_id == tenant_id).first()
-    if not sub:
-        return True # Free defaults
-
-    if sub.status != "active":
-        return False
-
-    if sub.current_period_end:
-        now = datetime.now(timezone.utc)
-        end_time = sub.current_period_end
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=timezone.utc)
-
-        if now > end_time:
-            sub.status = "expired"
-            db.commit()
-            return False
-
-    return True
+### Webhook Flow
 ```
+Razorpay server → POST /api/v1/payments/webhook
+  → Verify webhook signature (RAZORPAY_WEBHOOK_SECRET)
+  → Check idempotency (tx.status == "captured" → skip)
+  → Event: payment.captured → Update tx to "captured"
+  → Event: order.paid → Extend subscription period
+  → Reset usage quota
+```
+
+---
+
+## Automated Subscription Management (Celery)
+
+### `check_subscription_expiry_task` (runs on schedule)
+- Scans all active tenants
+- If `current_period_end < now()` → set status to `expired`
+- Sends `subscription_expired` WebSocket notification
+
+### `check_graceful_terminations_task` (runs on schedule)
+- Checks tenants in `terminating` state with expired grace period
+- Executes Mode 2 termination: deactivates users, severs WhatsApp connections, manages file purges
+
+### `check_subscription_reminders_task`
+- Sends renewal reminder messages to tenants approaching expiry
+
+---
+
+## Current Mode
+```
+PAYMENT_MODE=test
+RAZORPAY_KEY_ID=rzp_test_Suof5OJrcLYP9M
+```
+**⚠️ WARNING**: Test mode active. Real transactions not charged. Must migrate to `rzp_live_*` keys for production revenue.

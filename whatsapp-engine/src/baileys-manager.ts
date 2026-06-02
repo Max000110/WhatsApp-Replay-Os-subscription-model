@@ -18,6 +18,10 @@ export class BaileysManager {
     this.pool = pool;
     this.backendWebhookUrl = backendWebhookUrl;
     this.redisUrl = redisUrl;
+
+    // Start durable webhook retry scheduler and startup recovery sweep
+    this.startWebhookRetryScheduler();
+    this.recoverPendingWebhooks();
   }
 
   /**
@@ -168,7 +172,8 @@ export class BaileysManager {
         if (msg.key.fromMe || msg.key.remoteJid === "status@broadcast") continue;
 
         const remoteJid = msg.key.remoteJid;
-        const from = remoteJid?.split("@")[0] || "";
+        const rawParticipant = msg.key.participant || "";
+        const from = remoteJid?.split("@")[0].split(":")[0] || "";
         const pushName = msg.pushName || "";
         
         // Extract plain message body
@@ -186,12 +191,14 @@ export class BaileysManager {
           continue;
         }
 
-        console.log(`[BaileysManager - ${sessionId}] Incoming message from ${from}: "${body}"`);
+        console.log(`[BaileysManager - ${sessionId}] Incoming message from ${from} rawRemoteJid=${remoteJid || ""} rawParticipant=${rawParticipant}: "${body}"`);
 
         // Forward message payload via webhook to FastAPI backend router
         this.notifyWebhook(sessionId, "message", {
           messageId: msg.key.id || "",
           from,
+          rawRemoteJid: remoteJid || "",
+          rawParticipant,
           pushName,
           body,
           timestamp: Number(msg.messageTimestamp) || Math.floor(Date.now() / 1000)
@@ -205,7 +212,7 @@ export class BaileysManager {
         if (!update.key || !update.update) continue;
         
         const messageId = update.key.id;
-        const from = update.key.remoteJid?.split("@")[0] || "";
+        const from = update.key.remoteJid?.split("@")[0].split(":")[0] || "";
         const statusVal = update.update.status;
         
         if (statusVal === undefined || statusVal === null) continue;
@@ -240,18 +247,29 @@ export class BaileysManager {
   /**
    * Safe message dispatcher leveraging anti-ban queue
    */
-  public async queueOutgoingMessage(sessionId: string, to: string, text: string, messageId?: string): Promise<boolean> {
+  public async queueOutgoingMessage(
+    sessionId: string,
+    to: string,
+    text: string,
+    messageId?: string,
+    options?: {
+      simulateTyping?: boolean;
+      replyDelay?: number;
+      simulateTypingDelay?: number;
+      sendMode?: string;
+    }
+  ): Promise<boolean> {
     const queue = this.activeQueues.get(sessionId);
     if (!queue) {
       console.error(`[BaileysManager] Session ${sessionId} does not have an active queue. Initializing first.`);
       await this.initSession(sessionId);
       const reFetchedQueue = this.activeQueues.get(sessionId);
       if (!reFetchedQueue) return false;
-      await reFetchedQueue.queueMessage(to, text, messageId);
+      await reFetchedQueue.queueMessage(to, text, messageId, options);
       return true;
     }
 
-    await queue.queueMessage(to, text, messageId);
+    await queue.queueMessage(to, text, messageId, options);
     return true;
   }
 
@@ -270,10 +288,12 @@ export class BaileysManager {
       });
     } catch (error: any) {
       console.error(`[BaileysManager - ${sessionId}] Webhook payload transmission failed:`, error.message);
+      // Persist failed webhook for automatic retry and startup recovery sweep
+      await this.persistFailedWebhook(sessionId, event, data, error.message || "Connection refused/timeout");
     }
   }
 
-  private async cleanupSession(sessionId: string) {
+  public async cleanupSession(sessionId: string) {
     const socket = this.activeSockets.get(sessionId);
     if (socket) {
       try {
@@ -296,5 +316,99 @@ export class BaileysManager {
 
   public getActiveSessionCount(): number {
     return this.activeSockets.size;
+  }
+
+  /**
+   * Persists a failed webhook transmission to the Postgres DB
+   */
+  private async persistFailedWebhook(sessionId: string, event: string, data: any, errorMessage: string) {
+    try {
+      await this.pool.query(
+        `INSERT INTO pending_webhooks (session_id, event, data, attempts, status, last_attempt_at, error_message)
+         VALUES ($1, $2, $3, 1, 'pending', NOW(), $4)`,
+        [sessionId, event, JSON.stringify(data), errorMessage]
+      );
+      console.log(`[BaileysManager - ${sessionId}] Persisted failed webhook event '${event}' to database for retry replay.`);
+    } catch (err: any) {
+      console.error(`[BaileysManager] CRITICAL: Failed to persist failed webhook to database:`, err.message);
+    }
+  }
+
+  /**
+   * Starts the background retry interval (running every 30 seconds)
+   */
+  private startWebhookRetryScheduler() {
+    console.log("[BaileysManager] Starting Durable Webhook Retry Queue Scheduler (interval: 30 seconds).");
+    setInterval(() => {
+      this.processPendingWebhooks().catch(err => {
+        console.error("[BaileysManager] Webhook Retry Scheduler execution failed:", err.message);
+      });
+    }, 30000);
+  }
+
+  /**
+   * Triggers an immediate startup sweep to recover any previously failed callbacks
+   */
+  private async recoverPendingWebhooks() {
+    console.log("[BaileysManager] Running Startup Webhook Recovery Sweep...");
+    setTimeout(() => {
+      this.processPendingWebhooks().catch(err => {
+        console.error("[BaileysManager] Startup Webhook Recovery execution failed:", err.message);
+      });
+    }, 5000);
+  }
+
+  /**
+   * Queries and replays all pending webhooks up to 5 times before moving them to the DLQ
+   */
+  private async processPendingWebhooks() {
+    try {
+      const res = await this.pool.query(
+        `SELECT id, session_id, event, data, attempts FROM pending_webhooks WHERE status = 'pending' ORDER BY created_at ASC`
+      );
+      
+      if (res.rows.length === 0) return;
+      
+      console.log(`[BaileysManager] Webhook Retry Queue: Replaying ${res.rows.length} pending events...`);
+      
+      for (const row of res.rows) {
+        const { id, session_id, event, data, attempts } = row;
+        
+        try {
+          // Attempt instant webhook delivery
+          await axios.post(this.backendWebhookUrl, {
+            sessionId: session_id,
+            event,
+            data
+          }, {
+            headers: { "Content-Type": "application/json" },
+            timeout: 5000
+          });
+          
+          // Delete row upon successful delivery
+          await this.pool.query("DELETE FROM pending_webhooks WHERE id = $1", [id]);
+          console.log(`[BaileysManager - ${session_id}] Webhook Retry SUCCESS: Replayed and resolved event '${event}' (ID: ${id})`);
+          
+        } catch (error: any) {
+          const nextAttempt = attempts + 1;
+          const statusVal = nextAttempt >= 5 ? "failed" : "pending";
+          
+          if (statusVal === "failed") {
+            console.warn(`[BaileysManager - ${session_id}] Webhook Retry FAILED: Event '${event}' exceeded maximum attempts (5). Moving to Dead Letter Queue (DLQ).`);
+          } else {
+            console.warn(`[BaileysManager - ${session_id}] Webhook Retry FAILED (Attempt ${nextAttempt}/5) for event '${event}':`, error.message);
+          }
+          
+          await this.pool.query(
+            `UPDATE pending_webhooks 
+             SET attempts = $1, status = $2, last_attempt_at = NOW(), error_message = $3 
+             WHERE id = $4`,
+            [nextAttempt, statusVal, error.message || "Retry Connection Error", id]
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error("[BaileysManager] Error running Webhook Retry Queue processor:", err.message);
+    }
   }
 }

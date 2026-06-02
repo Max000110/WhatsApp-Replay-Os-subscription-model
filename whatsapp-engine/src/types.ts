@@ -26,4 +26,10 @@ export interface QueueMessage {
   text: string;
   simulateTyping?: boolean;
   messageId?: string;
+  options?: {
+    replyDelay?: number;
+    simulateTypingDelay?: number;
+    sendMode?: string;
+  };
 }
+

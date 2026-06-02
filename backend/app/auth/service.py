@@ -35,10 +35,31 @@ def get_current_user(
     if user is None:
         raise credentials_exception
         
+    # Check global emergency system lock
+    try:
+        import redis
+        r = redis.Redis.from_url(settings.REDIS_URL)
+        if r.get("emergency_system_lock") == b"true" and user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="System is under emergency lockdown. Please try again later."
+            )
+    except HTTPException as he:
+        raise he
+    except Exception as re_err:
+        print("[Auth] Emergency lock check failed:", re_err)
+        
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is suspended."
+        )
+        
+    tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
+    if tenant and tenant.status in ["suspended", "TERMINATED"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Tenant space is {tenant.status}."
         )
         
     return user

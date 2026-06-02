@@ -25,7 +25,14 @@ class SessionService:
                 print(f"[SessionService] Failed to trigger session init {session_id}:", err)
                 return False
 
-    async def send_whatsapp_message(self, session_id: str, to_phone: str, text: str, message_id: str = None) -> bool:
+    async def send_whatsapp_message(
+        self,
+        session_id: str,
+        to_phone: str,
+        text: str,
+        message_id: str = None,
+        options: dict = None
+    ) -> bool:
         """
         Enqueues an outbound WhatsApp message inside the Node service anti-ban system
         """
@@ -34,7 +41,8 @@ class SessionService:
             "sessionId": str(session_id),
             "to": to_phone,
             "text": text,
-            "messageId": str(message_id) if message_id else None
+            "messageId": str(message_id) if message_id else None,
+            "options": options or {}
         }
         
         async with httpx.AsyncClient(timeout=10.0) as client:
