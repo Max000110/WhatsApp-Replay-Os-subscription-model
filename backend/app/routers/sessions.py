@@ -323,7 +323,7 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                 t_model_start = time.time()
                 db_fresh = SessionLocal()
                 try:
-                    reply = await ai_gateway.generate_response(
+                    reply_raw = await ai_gateway.generate_response(
                         prompt=message_body,
                         system_prompt=injected_prompt,
                         model=bot.model_name,
@@ -334,6 +334,10 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                 finally:
                     db_fresh.close()
                 t_model = int((time.time() - t_model_start) * 1000)
+
+                # Parse and strip sources using the utility function
+                from app.services.ai_service import parse_and_strip_sources
+                reply, sources = parse_and_strip_sources(reply_raw, kb_context, bot, conv)
 
                 # Re-open session to persist outbound bot reply
                 db = SessionLocal()
@@ -347,6 +351,7 @@ async def process_incoming_chat_pipeline(session_id: str, event: str, data_dict:
                         origin="outbound",
                         sender_type="bot",
                         content=reply,
+                        source_metadata={"sources": sources},
                         status="queued",
                         ack_state="queued"
                     )

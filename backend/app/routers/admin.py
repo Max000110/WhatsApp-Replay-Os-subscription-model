@@ -888,7 +888,7 @@ async def terminate_tenant(
     # MODE 1: INSTANT
     if mode == "instant":
         tenant.status = "TERMINATED"
-        tenant.is_visible = True
+        tenant.is_visible = False
         tenant.termination_grace_period_ends = None
         
         # 1. Lock user logins (safeguarding super admin accounts)

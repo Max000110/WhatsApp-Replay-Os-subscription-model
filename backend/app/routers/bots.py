@@ -154,7 +154,7 @@ async def test_prompt_sandbox(
     from app.database import SessionLocal
     db_fresh = SessionLocal()
     try:
-        llm_response = await ai_gateway.generate_response(
+        llm_response_raw = await ai_gateway.generate_response(
             prompt=payload.test_question,
             system_prompt=constructed_prompt,
             model=bot.model_name,
@@ -164,6 +164,9 @@ async def test_prompt_sandbox(
         )
     finally:
         db_fresh.close()
+
+    from app.services.ai_service import parse_and_strip_sources
+    llm_response, sources = parse_and_strip_sources(llm_response_raw, kb_context, bot, conv)
 
     return PromptTestResponse(
         constructed_prompt=constructed_prompt,

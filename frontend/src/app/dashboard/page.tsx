@@ -83,6 +83,10 @@ export default function DashboardPage() {
   // Live Override send states
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  
+  // Context Panel States
+  const [convContext, setConvContext] = useState<any | null>(null);
+  const [contextLoading, setContextLoading] = useState<boolean>(false);
 
   // Refs for stale-closure-free access inside polling intervals
   const activeConvRef = useRef<any>(null);
@@ -92,6 +96,25 @@ export default function DashboardPage() {
   // Keep refs in sync with state
   useEffect(() => { activeConvRef.current = activeConv; }, [activeConv]);
   useEffect(() => { activeKbRef.current = activeKb; }, [activeKb]);
+
+  // Fetch unified conversation context when conversation changes
+  useEffect(() => {
+    if (activeConv?.id) {
+      setContextLoading(true);
+      api.chats.getContext(activeConv.id)
+        .then((res: any) => {
+          setConvContext(res);
+        })
+        .catch((err: any) => {
+          console.error('[Dashboard] Failed to fetch conversation context:', err);
+        })
+        .finally(() => {
+          setContextLoading(false);
+        });
+    } else {
+      setConvContext(null);
+    }
+  }, [activeConv?.id]);
 
   // Auto-scroll to the latest message whenever the messages list changes
   useEffect(() => {
@@ -1196,7 +1219,7 @@ export default function DashboardPage() {
           {/* TAB 3: LIVE AGENT CHAT OVERRIDE */}
           {/* ======================================= */}
           {activeTab === 'chats' && (
-            <div className="grid grid-cols-3 gap-8 h-[calc(100vh-12rem)] items-stretch">
+            <div className="grid grid-cols-4 gap-6 h-[calc(100vh-12rem)] items-stretch">
               
               {/* Left Column: Conversations & Support Agents Sidebar */}
               <div className="flex flex-col gap-6 h-[calc(100vh-12rem)] overflow-hidden">
@@ -1248,12 +1271,15 @@ export default function DashboardPage() {
                       </div>
                     ) : (
                       agents.map((a: any) => (
-                        <div key={a.id} className="p-2.5 bg-slate-950/30 border border-white/5 rounded-lg flex items-center justify-between text-xs">
-                          <div>
-                            <p className="font-semibold text-slate-200">{a.name}</p>
-                            <p className="text-[10px] text-slate-500">{a.department} • {a.email}</p>
+                        <div key={a.id} className="p-2.5 rounded-lg bg-slate-950/30 border border-white/5 flex flex-col gap-1 text-slate-450">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-xs text-slate-200">{a.name}</span>
+                            <span className={`text-[8px] uppercase tracking-wider font-extrabold px-1.5 py-0.5 rounded ${
+                              a.status === 'available' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                            }`}>{a.status}</span>
                           </div>
-                          <span className={`h-2 w-2 rounded-full ${a.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-700'}`}></span>
+                          <span className="text-[9px] text-slate-500 font-medium">Email: {a.email}</span>
+                          <span className="text-[9px] text-primary font-bold uppercase tracking-wider">Dept: {a.department}</span>
                         </div>
                       ))
                     )}
@@ -1262,8 +1288,8 @@ export default function DashboardPage() {
 
               </div>
 
-              {/* Right Columns: Thread & override input */}
-              <div className="col-span-2 bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden">
+              {/* Middle Column: Thread & override input */}
+              <div className="col-span-2 bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden h-[calc(100vh-12rem)]">
                 {activeConv ? (
                   <>
                     {/* Thread Header */}
@@ -1288,7 +1314,7 @@ export default function DashboardPage() {
                               activeConv.handoff_status === 'HUMAN_ACTIVE'
                                 ? 'bg-emerald-400 animate-pulse'
                                 : activeConv.handoff_status === 'WAITING_AGENT'
-                                  ? 'bg-amber-400 animate-bounce'
+                                  ? 'bg-amber-400 animate-pulse'
                                   : activeConv.handoff_status === 'RESOLVED'
                                     ? 'bg-emerald-400'
                                     : 'bg-indigo-400'
@@ -1377,6 +1403,11 @@ export default function DashboardPage() {
                           }`}
                         >
                           <p>{m.content}</p>
+                          {m.source_metadata && m.source_metadata.sources && m.source_metadata.sources.length > 0 && (
+                            <span className="text-[8px] bg-white/10 px-1 py-0.5 rounded text-slate-400 inline-block mt-1 font-mono">
+                              Src: {m.source_metadata.sources.join(', ')}
+                            </span>
+                          )}
                           <span className={`text-[8px] uppercase tracking-widest font-semibold block mt-2 text-right ${
                             m.direction === 'inbound' ? 'text-slate-500' : 'text-primary-hover'
                           }`}>
@@ -1438,6 +1469,115 @@ export default function DashboardPage() {
                     <p className="text-xs">Select a customer conversation thread from the sidebar to activate live agent controls.</p>
                   </div>
                 )}
+              </div>
+
+              {/* Right Column: Context Panel */}
+              <div className="col-span-1 bg-card border border-white/5 rounded-xl shadow-lg flex flex-col overflow-hidden h-[calc(100vh-12rem)]">
+                <div className="p-4 border-b border-white/5 shrink-0 flex items-center gap-2 bg-slate-950/20">
+                  <Activity className="h-4.5 w-4.5 text-primary animate-pulse" />
+                  <h3 className="text-sm font-semibold text-slate-200">Conversation Context</h3>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-5 text-xs text-slate-300">
+                  {contextLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                    </div>
+                  ) : convContext ? (
+                    <>
+                      {/* Customer Memory */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">Customer Memory</h4>
+                        <div className="space-y-1.5 bg-slate-950/30 p-2.5 rounded-lg border border-white/5">
+                          <p><strong>Preferences:</strong> {convContext.customer_memory?.customer_preferences || 'None'}</p>
+                          <p><strong>Summary:</strong> {convContext.customer_memory?.past_interactions_summary || 'None'}</p>
+                          <p><strong>Open Tickets:</strong> {convContext.customer_memory?.open_tickets || 'None'}</p>
+                          <p><strong>Lead Stage:</strong> <span className="capitalize text-primary">{convContext.customer_memory?.lead_stage || 'None'}</span></p>
+                          <p><strong>Status:</strong> <span className="capitalize text-primary">{convContext.customer_memory?.lead_status || 'None'}</span></p>
+                          <p><strong>Last Purchase:</strong> {convContext.customer_memory?.last_purchase || 'None'}</p>
+                        </div>
+                      </div>
+
+                      {/* RAG Matches */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">RAG Context Matches</h4>
+                        <div className="space-y-2">
+                          {convContext.rag_matches && convContext.rag_matches.length > 0 ? (
+                            convContext.rag_matches.map((match: string, idx: number) => (
+                              <div key={idx} className="bg-slate-950/40 p-2.5 rounded-lg border border-white/5 text-[11px] leading-relaxed italic text-slate-400">
+                                {match}
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-slate-500 italic p-1">No active vector matches for last query.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Business Profile */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">Business Profile</h4>
+                        <div className="space-y-1.5 bg-slate-950/30 p-2.5 rounded-lg border border-white/5">
+                          <p><strong>Company:</strong> {convContext.business_profile?.company_name || 'Not Configured'}</p>
+                          <p><strong>Location:</strong> {convContext.business_profile?.location || 'Not Configured'}</p>
+                          <p><strong>Hours:</strong> {convContext.business_profile?.working_hours || 'Not Configured'}</p>
+                          <p><strong>Services:</strong> {convContext.business_profile?.services || 'Not Configured'}</p>
+                        </div>
+                      </div>
+
+                      {/* AI Brain Config */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">AI Brain Config</h4>
+                        <div className="space-y-1.5 bg-slate-950/30 p-2.5 rounded-lg border border-white/5">
+                          <p><strong>Model:</strong> {convContext.ai_brain_config?.model_name || 'qwen2.5:1.5b-instruct'}</p>
+                          <p><strong>Temp:</strong> {convContext.ai_brain_config?.temperature ?? 0.4}</p>
+                          <p><strong>Personality:</strong> {convContext.ai_brain_config?.personality || 'Friendly'}</p>
+                          <p><strong>RAG Ingestion:</strong> {convContext.ai_brain_config?.rag_enabled ? 'Enabled ✅' : 'Disabled ❌'}</p>
+                          <p><strong>Memory:</strong> {convContext.ai_brain_config?.memory_enabled ? 'Enabled ✅' : 'Disabled ❌'}</p>
+                        </div>
+                      </div>
+
+                      {/* Customer History */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">Interaction History</h4>
+                        <div className="space-y-1.5 bg-slate-950/30 p-2.5 rounded-lg border border-white/5">
+                          <p><strong>Total Messages:</strong> {convContext.customer_history?.message_count || 0}</p>
+                          <p><strong>First Seen:</strong> {convContext.customer_history?.first_message_at ? new Date(convContext.customer_history.first_message_at).toLocaleString() : 'N/A'}</p>
+                          <p><strong>Last Seen:</strong> {convContext.customer_history?.last_message_at ? new Date(convContext.customer_history.last_message_at).toLocaleString() : 'N/A'}</p>
+                        </div>
+                      </div>
+
+                      {/* Recent Conversations */}
+                      <div className="space-y-2">
+                        <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 pb-1">Other Active Chats</h4>
+                        <div className="space-y-1.5">
+                          {convContext.recent_conversations && convContext.recent_conversations.length > 0 ? (
+                            convContext.recent_conversations.map((rc: any) => (
+                              <button
+                                key={rc.id}
+                                onClick={() => {
+                                  const c = conversations.find(x => x.id === rc.id);
+                                  if (c) setActiveConv(c);
+                                }}
+                                className="w-full text-left p-2 rounded-lg bg-slate-950/20 border border-white/5 hover:bg-white/5 transition flex justify-between items-center"
+                              >
+                                <span className="truncate max-w-[120px] font-semibold text-slate-300">{rc.customer_name || 'Guest User'}</span>
+                                <span className="text-[9px] text-slate-500">{rc.last_message_at ? new Date(rc.last_message_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <p className="text-slate-500 italic p-1">No other active chats.</p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-500 text-center">
+                      <Database className="h-8 w-8 mb-2 text-slate-650" />
+                      <p className="text-xs">Select conversation to load metadata.</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
             </div>

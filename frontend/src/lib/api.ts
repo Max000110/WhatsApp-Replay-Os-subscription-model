@@ -125,7 +125,9 @@ class ApiClient {
     handoff: (id: string, payload: { status: string }) =>
       this.request(`/chats/${id}/handoff`, { method: 'POST', body: JSON.stringify(payload) }),
     release: (id: string) =>
-      this.request(`/chats/${id}/release`, { method: 'POST' })
+      this.request(`/chats/${id}/release`, { method: 'POST' }),
+    getContext: (id: string) =>
+      this.request(`/chats/${id}/context`)
   };
 
   // Support Agents & Departments

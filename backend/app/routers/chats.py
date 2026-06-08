@@ -485,3 +485,113 @@ async def release_conversation(conversation_id: UUID, tenant_id: UUID = Depends(
         print("[Release Websocket] Broadcast failed:", e)
 
     return conv
+
+@router.get("/{conversation_id}/context")
+def get_conversation_context(conversation_id: UUID, tenant_id: UUID = Depends(get_current_tenant_id), db: Session = Depends(get_db)):
+    """
+    Fetches the aggregated intelligence context for the manual override agent dashboard.
+    Loads Customer History, Business Profile, AI Brain Config, Customer Memory, RAG Matches, and Recent Conversations.
+    """
+    from app.models.all_models import Chatbot, Conversation, Message
+    
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.tenant_id == tenant_id
+    ).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    # 1. AI Brain Config & Business Profile
+    bot = db.query(Chatbot).filter(
+        Chatbot.session_id == conv.session_id,
+        Chatbot.tenant_id == tenant_id,
+        Chatbot.is_active == True
+    ).first()
+    
+    if not bot:
+        # Fallback to any bot configured for the tenant
+        bot = db.query(Chatbot).filter(
+            Chatbot.tenant_id == tenant_id,
+            Chatbot.is_active == True
+        ).first()
+
+    business_profile = {}
+    ai_brain_config = {}
+    if bot:
+        business_profile = {
+            "company_name": bot.company_name,
+            "location": bot.location,
+            "working_hours": bot.working_hours,
+            "services": bot.services,
+            "products": bot.products,
+            "pricing": bot.pricing,
+            "policies": bot.policies,
+            "contact_details": bot.contact_details
+        }
+        ai_brain_config = {
+            "name": bot.name,
+            "model_name": bot.model_name,
+            "temperature": bot.temperature,
+            "custom_instructions": bot.custom_instructions,
+            "system_prompt": bot.system_prompt,
+            "rag_enabled": bot.rag_enabled,
+            "memory_enabled": bot.memory_enabled,
+            "personality": bot.personality
+        }
+
+    # 2. Customer Memory (from Conversation model)
+    customer_memory = {
+        "customer_preferences": conv.customer_preferences,
+        "past_interactions_summary": conv.past_interactions_summary,
+        "open_tickets": conv.open_tickets,
+        "lead_status": conv.lead_status,
+        "lead_stage": conv.lead_stage,
+        "last_purchase": conv.last_purchase
+    }
+
+    # 3. Customer History
+    msgs = db.query(Message).filter(Message.conversation_id == conversation_id).order_by(Message.created_at.desc()).all()
+    msg_count = len(msgs)
+    first_msg_at = msgs[-1].created_at.isoformat() if msgs else None
+    last_msg_at = msgs[0].created_at.isoformat() if msgs else None
+    
+    customer_history = {
+        "message_count": msg_count,
+        "first_message_at": first_msg_at,
+        "last_message_at": last_msg_at
+    }
+
+    # 4. RAG Matches (Query vector DB using the last inbound customer message)
+    rag_matches = []
+    last_inbound = next((m for m in msgs if m.direction == "inbound"), None)
+    if last_inbound and bot and bot.rag_enabled:
+        try:
+            from app.services.ai_service import search_pgvector_sync
+            matches = search_pgvector_sync(db, str(conv.session_id), last_inbound.content, limit=3)
+            rag_matches = [m for m in matches]
+        except Exception as e:
+            print(f"[chats_router] RAG matches lookup failed: {e}")
+
+    # 5. Recent Conversations
+    recent_convs = db.query(Conversation).filter(
+        Conversation.tenant_id == tenant_id,
+        Conversation.id != conversation_id
+    ).order_by(Conversation.last_message_at.desc()).limit(5).all()
+    
+    recent_list = []
+    for c in recent_convs:
+        recent_list.append({
+            "id": str(c.id),
+            "customer_name": c.customer_name,
+            "customer_phone": c.customer_phone,
+            "last_message_at": c.last_message_at.isoformat() if c.last_message_at else None
+        })
+
+    return {
+        "customer_history": customer_history,
+        "business_profile": business_profile,
+        "ai_brain_config": ai_brain_config,
+        "customer_memory": customer_memory,
+        "rag_matches": rag_matches,
+        "recent_conversations": recent_list
+    }

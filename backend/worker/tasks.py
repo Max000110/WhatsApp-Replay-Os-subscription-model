@@ -115,6 +115,7 @@ def process_kb_document_task(doc_id: str):
     except Exception as e:
         print(f"[Celery Worker] Error processing document {doc_id}:", str(e))
         doc.status = "failed"
+        doc.error_message = str(e)
         db.commit()
         try:
             db.refresh(doc)
@@ -126,6 +127,7 @@ def process_kb_document_task(doc_id: str):
                     "filename": doc.filename,
                     "file_path": doc.file_path,
                     "status": doc.status,
+                    "error_message": doc.error_message,
                     "created_at": doc.created_at.isoformat() if doc.created_at else None
                 }
                 publish_tenant_event_sync(str(kb.tenant_id), "kb_document", doc_data)

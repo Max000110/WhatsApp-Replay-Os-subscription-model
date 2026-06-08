@@ -135,6 +135,7 @@ class KBDocument(Base):
     filename = Column(String(255), nullable=False)
     file_path = Column(String(512))
     status = Column(String(50), default="processing")
+    error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     kb = relationship("KnowledgeBase", back_populates="documents")
@@ -204,6 +205,7 @@ class Message(Base):
     status = Column(String(50), default="queued")
     ack_state = Column(String(50), default="queued")
     whatsapp_message_id = Column(String(100), unique=True, index=True, nullable=True)
+    source_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     conversation = relationship("Conversation", back_populates="messages")

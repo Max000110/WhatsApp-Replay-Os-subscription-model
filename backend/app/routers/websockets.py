@@ -1,5 +1,6 @@
 import json
 import asyncio
+import time
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from jose import jwt
@@ -32,18 +33,24 @@ async def listen_whatsapp_outbound():
     """
     print("[WebSocket Router] Initializing Redis pubsub listener task...")
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe("whatsapp_outbound")
-    print("[WebSocket Router] Subscribed to Redis channel: whatsapp_outbound")
+    try:
+        await pubsub.subscribe("whatsapp_outbound")
+        print("[WebSocket Router] Subscribed to Redis channel: whatsapp_outbound")
+    except Exception as subscribe_err:
+        print(f"[WebSocket Router] [CRITICAL_FAULT] Redis subscription failed: {subscribe_err}")
+        return
+
     try:
         async for message in pubsub.listen():
             if message["type"] == "message":
                 try:
                     payload = json.loads(message["data"])
-                    to_jid = payload.get("to_jid")
+                    to_jid = payload.get("to_jid") or payload.get("jid")
                     text_msg = payload.get("text")
                     tenant_id = payload.get("tenant_id")
                     
                     if not to_jid or not text_msg or not tenant_id:
+                        print(f"[whatsapp_outbound] Validation Error - Missing fields in payload: {payload}")
                         continue
                     
                     # Clean phone number from JID (e.g. 917021886525@s.whatsapp.net -> 917021886525)
@@ -99,6 +106,8 @@ async def listen_whatsapp_outbound():
                             text=text_msg,
                             message_id=str(new_msg.id)
                         )
+                        
+                        delivery_status = "sent" if success else "failed"
                         if success:
                             new_msg.status = "sent"
                             new_msg.ack_state = "sent"
@@ -106,6 +115,13 @@ async def listen_whatsapp_outbound():
                             new_msg.status = "failed"
                             new_msg.ack_state = "failed"
                         db.commit()
+                        
+                        # Logging criteria: tenant_id, jid, message_id, delivery_status
+                        print(
+                            f"[whatsapp_outbound] Dispatch Status Log - "
+                            f"tenant_id={tenant_id}, jid={to_jid}, "
+                            f"message_id={new_msg.id}, delivery_status={delivery_status}"
+                        )
                         
                         # Notify UI via websockets
                         msg_data = {
@@ -120,6 +136,8 @@ async def listen_whatsapp_outbound():
                         await websocket_manager.publish_event(str(tenant_id), "message", msg_data)
                     finally:
                         db.close()
+                except json.JSONDecodeError as json_err:
+                    print(f"[whatsapp_outbound] Failed to parse message JSON: {json_err}")
                 except Exception as err:
                     print(f"[whatsapp_outbound] Error processing message: {err}")
     except asyncio.CancelledError:
@@ -188,14 +206,37 @@ async def agent_websocket_endpoint_double(websocket: WebSocket, agent_id: str):
     await manager.connect(websocket, agent_id)
     try:
         while True:
-            data = await websocket.receive_json()
-            if data.get("action") == "send_override_message":
-                payload = data.get("payload")
-                await redis_client.publish("whatsapp_outbound", json.dumps({
-                    "to_jid": payload["jid"],
-                    "text": payload["text"],
-                    "tenant_id": payload["tenant_id"]
-                }))
+            try:
+                data = await websocket.receive_json()
+                if data.get("action") == "send_override_message":
+                    payload = data.get("payload")
+                    if not payload or not isinstance(payload, dict):
+                        print(f"[AgentWS] Missing payload dictionary for manual override agent_id={agent_id}")
+                        continue
+                    
+                    jid = payload.get("jid")
+                    text_msg = payload.get("text")
+                    tenant_id = payload.get("tenant_id")
+                    
+                    if not jid or not text_msg or not tenant_id:
+                        print(f"[AgentWS] Validation Error: Missing required fields in override payload: {payload}")
+                        continue
+                    
+                    # Direct publish block mapping to the required outbound structure
+                    outbound_payload = {
+                        "type": "human_override",
+                        "tenant_id": str(tenant_id),
+                        "jid": str(jid),
+                        "text": str(text_msg),
+                        "timestamp": str(time.time())
+                    }
+                    
+                    await redis_client.publish("whatsapp_outbound", json.dumps(outbound_payload))
+                    print(f"[AgentWS] Published manual override: tenant_id={tenant_id}, jid={jid}")
+            except json.JSONDecodeError as decode_err:
+                print(f"[AgentWS] JSON Decode Failure for manual override message agent_id={agent_id}: {decode_err}")
+            except Exception as e:
+                print(f"[AgentWS] Error handling socket message: {e}")
     except WebSocketDisconnect:
         manager.disconnect(websocket, agent_id)
 
@@ -204,13 +245,36 @@ async def agent_websocket_endpoint(websocket: WebSocket, agent_id: str):
     await manager.connect(websocket, agent_id)
     try:
         while True:
-            data = await websocket.receive_json()
-            if data.get("action") == "send_override_message":
-                payload = data.get("payload")
-                await redis_client.publish("whatsapp_outbound", json.dumps({
-                    "to_jid": payload["jid"],
-                    "text": payload["text"],
-                    "tenant_id": payload["tenant_id"]
-                }))
+            try:
+                data = await websocket.receive_json()
+                if data.get("action") == "send_override_message":
+                    payload = data.get("payload")
+                    if not payload or not isinstance(payload, dict):
+                        print(f"[AgentWS] Missing payload dictionary for manual override agent_id={agent_id}")
+                        continue
+                    
+                    jid = payload.get("jid")
+                    text_msg = payload.get("text")
+                    tenant_id = payload.get("tenant_id")
+                    
+                    if not jid or not text_msg or not tenant_id:
+                        print(f"[AgentWS] Validation Error: Missing required fields in override payload: {payload}")
+                        continue
+                    
+                    # Direct publish block mapping to the required outbound structure
+                    outbound_payload = {
+                        "type": "human_override",
+                        "tenant_id": str(tenant_id),
+                        "jid": str(jid),
+                        "text": str(text_msg),
+                        "timestamp": str(time.time())
+                    }
+                    
+                    await redis_client.publish("whatsapp_outbound", json.dumps(outbound_payload))
+                    print(f"[AgentWS] Published manual override: tenant_id={tenant_id}, jid={jid}")
+            except json.JSONDecodeError as decode_err:
+                print(f"[AgentWS] JSON Decode Failure for manual override message agent_id={agent_id}: {decode_err}")
+            except Exception as e:
+                print(f"[AgentWS] Error handling socket message: {e}")
     except WebSocketDisconnect:
         manager.disconnect(websocket, agent_id)

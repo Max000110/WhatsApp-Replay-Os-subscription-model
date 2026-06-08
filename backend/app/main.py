@@ -32,6 +32,10 @@ try:
         conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_state VARCHAR(50) DEFAULT 'auto';"))
         conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS recurring_interval VARCHAR(50) DEFAULT 'none';"))
         
+        # Ingestion error logs & Source Attribution
+        conn.execute(text("ALTER TABLE kb_documents ADD COLUMN IF NOT EXISTS error_message TEXT;"))
+        conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_metadata JSONB;"))
+        
         # Phase 1: Google OAuth & Administrative Hardening
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN DEFAULT false;"))
         conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(100);"))
